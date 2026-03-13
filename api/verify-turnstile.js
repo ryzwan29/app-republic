@@ -20,8 +20,8 @@ function getClientIP(req) {
 function formatCooldown(seconds) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  if (h > 0) return `${h} jam ${m} menit`;
-  return `${m} menit`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
 }
 
 export async function handler(req, res) {
@@ -83,7 +83,7 @@ export async function handler(req, res) {
     res.writeHead(429, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       success: false,
-      error: `IP ini sudah claim. Coba lagi dalam ${formatCooldown(ipCheck.remainingSeconds)}.`,
+      error: `This IP has already claimed. Try again in ${formatCooldown(ipCheck.remainingSeconds)}!`,
       remainingSeconds: ipCheck.remainingSeconds,
       blockedBy: 'ip',
     }));
@@ -97,7 +97,7 @@ export async function handler(req, res) {
       res.writeHead(429, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: false,
-        error: `Wallet ini sudah claim. Coba lagi dalam ${formatCooldown(walletCheck.remainingSeconds)}.`,
+        error: `This wallet has already claimed. Try again in ${formatCooldown(walletCheck.remainingSeconds)}!`,
         remainingSeconds: walletCheck.remainingSeconds,
         blockedBy: 'wallet',
       }));
