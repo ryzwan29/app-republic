@@ -6,7 +6,6 @@ let signer = null;
 
 export function getProvider() {
   if (!provider) {
-    // Langsung pakai RPC testnet — proxy /rpc hanya works di Vite dev server, tidak di production
     const rpcUrl = 'https://evm-rpc.republicai.io';
     provider = new ethers.JsonRpcProvider(rpcUrl);
   }
@@ -28,16 +27,13 @@ export async function connectMetaMask() {
   if (!window.ethereum) throw new Error('MetaMask is not installed. Please install MetaMask to continue.');
 
   try {
-    // Force account picker popup every time
     await window.ethereum.request({
       method: 'wallet_requestPermissions',
       params: [{ eth_accounts: {} }],
     });
 
-    // Request accounts
     await window.ethereum.request({ method: 'eth_requestAccounts' });
 
-    // Check & switch network
     const chainIdHex = await window.ethereum.request({ method: 'eth_chainId' });
     if (chainIdHex !== NETWORK.chainId) {
       await switchToRepublicNetwork();
@@ -81,28 +77,24 @@ export async function switchToRepublicNetwork() {
 
 export async function getEVMBalances(address) {
   const rpcProvider = getProvider();
-  const balances = {};
-
-  try {
-    // Native RAI balance
-    const raiBalance = await rpcProvider.getBalance(address);
-    balances.RAI = ethers.formatEther(raiBalance);
-  } catch {
-    balances.RAI = '0';
-  }
-
-  // ERC20 balances
   const erc20Tokens = ['USDT', 'USDC', 'WRAI', 'WBTC', 'WETH'];
-  for (const symbol of erc20Tokens) {
-    try {
+
+  // ── Semua fetch paralel sekaligus — tidak nunggu satu-satu lagi ─────────────
+  const [raiRaw, ...erc20Raws] = await Promise.all([
+    rpcProvider.getBalance(address).catch(() => null),
+    ...erc20Tokens.map(symbol => {
       const token = TOKENS[symbol];
       const contract = new ethers.Contract(token.address, ERC20_ABI, rpcProvider);
-      const balance = await contract.balanceOf(address);
-      balances[symbol] = ethers.formatUnits(balance, token.decimals);
-    } catch {
-      balances[symbol] = '0';
-    }
-  }
+      return contract.balanceOf(address).catch(() => null);
+    }),
+  ]);
+
+  const balances = {};
+  balances.RAI = raiRaw ? ethers.formatEther(raiRaw) : '0';
+  erc20Tokens.forEach((symbol, i) => {
+    const raw = erc20Raws[i];
+    balances[symbol] = raw ? ethers.formatUnits(raw, TOKENS[symbol].decimals) : '0';
+  });
 
   return balances;
 }

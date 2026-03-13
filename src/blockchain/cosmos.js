@@ -1,7 +1,7 @@
 import { COSMOS_CONFIG } from './tokens.js';
 
 const REST = 'https://rest.republicai.io';
-const RPC = 'https://rest.republicai.io';
+const RPC = 'https://rpc.republicai.io';
 
 async function fetchREST(path) {
   const res = await fetch(`${REST}${path}`);

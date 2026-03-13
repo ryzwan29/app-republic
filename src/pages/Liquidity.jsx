@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useWallet } from '../App.jsx';
 import { TokenIcon } from '../components/TokenSelector.jsx';
 import { LoadingOverlay } from '../components/LoadingSpinner.jsx';
-import { getPoolReserves, getUserLPBalance, addLiquidity, removeLiquidity, getAllOraclePrices } from '../blockchain/amm.js';
+import { getPoolReserves, getUserLPBalance, addLiquidity, removeLiquidity, getAllOraclePrices, invalidatePoolCache } from '../blockchain/amm.js';
 import { calcAPR, fetchAllVolumes24h } from '../blockchain/swapVolume.js';
 import { formatBalance } from '../blockchain/evm.js';
 import { POOL_PAIRS, TOKENS, CONTRACTS, POOL_CONTRACTS } from '../blockchain/tokens.js';
@@ -58,22 +58,25 @@ const LP_TOKEN_ABI_MIN = [
   'function approve(address,uint256) returns (bool)',
 ];
 
-// Ambil LP balance dari LP Token contract
-// Pair address diambil dari POOL_CONTRACTS (sudah hardcode, tidak perlu getPair lagi)
+// Cache lokal lpToken per pairAddress (sinkron dengan amm.js _lpTokenCache via getPoolReserves)
+const _localLpTokenCache = {};
+
 async function getLPBalanceDirect(token0Symbol, token1Symbol, userAddress) {
   try {
     const provider = getProvider();
 
-    // Tentukan key — pair selalu WRAI vs token lain
     const otherSymbol = token0Symbol === 'WRAI' ? token1Symbol : token0Symbol;
     const pairAddr = POOL_CONTRACTS[otherSymbol];
     if (!pairAddr || pairAddr === '') return { balance: '0', pairAddr: null, lpTokenAddr: null };
 
-    // Ambil LP Token address dari Pair
-    const pair = new ethers.Contract(pairAddr, PAIR_ABI_MIN, provider);
-    const lpTokenAddr = await pair.lpToken();
+    // Pakai cache kalau sudah ada — skip 1 RPC call ke lpToken()
+    let lpTokenAddr = _localLpTokenCache[pairAddr];
+    if (!lpTokenAddr) {
+      const pair = new ethers.Contract(pairAddr, PAIR_ABI_MIN, provider);
+      lpTokenAddr = await pair.lpToken();
+      _localLpTokenCache[pairAddr] = lpTokenAddr;
+    }
 
-    // Baca balance dari LP Token contract
     const lpToken = new ethers.Contract(lpTokenAddr, LP_TOKEN_ABI_MIN, provider);
     const balance = await lpToken.balanceOf(userAddress);
     return { balance: ethers.formatEther(balance), pairAddr, lpTokenAddr };
@@ -129,32 +132,32 @@ export default function Liquidity() {
     return () => { cancelled = true; };
   }, [poolData, tokenPrices]);
 
-  async function fetchAllPoolData() {
+  async function fetchAllPoolData({ forceRefresh = false } = {}) {
     setLoading(true);
     const pd = {};
     const ul = {};
-    for (const pair of POOL_PAIRS) {
+
+    // ── Semua pair fetch paralel — tidak nunggu satu-satu ────────────────────
+    await Promise.all(POOL_PAIRS.map(async (pair) => {
       const key = `${pair.token0}-${pair.token1}`;
-      const t0addr = TOKENS[pair.token0].address;
-      const t1addr = TOKENS[pair.token1].address;
 
-      try {
-        pd[key] = await getPoolReserves(pair.token0, pair.token1);
-      } catch {
-        pd[key] = { reserve0: '0', reserve1: '0', totalSupply: '0', pairAddress: null };
-      }
+      const [poolResult, lpResult] = await Promise.all([
+        getPoolReserves(pair.token0, pair.token1, { forceRefresh }).catch(() =>
+          ({ reserve0: '0', reserve1: '0', totalSupply: '0', pairAddress: null })
+        ),
+        evmAddress
+          ? getLPBalanceDirect(pair.token0, pair.token1, evmAddress).catch(() =>
+              ({ balance: '0', pairAddr: null, lpTokenAddr: null })
+            )
+          : Promise.resolve({ balance: '0', pairAddr: null, lpTokenAddr: null }),
+      ]);
 
-      if (evmAddress) {
-        try {
-          const { balance, pairAddr, lpTokenAddr } = await getLPBalanceDirect(pair.token0, pair.token1, evmAddress);
-          ul[key] = balance;
-          if (pairAddr && pd[key]) pd[key].pairAddress = pairAddr;
-          if (lpTokenAddr && pd[key]) pd[key].lpTokenAddress = lpTokenAddr;
-        } catch {
-          ul[key] = '0';
-        }
-      }
-    }
+      pd[key] = poolResult;
+      ul[key] = lpResult.balance;
+      if (lpResult.pairAddr   && pd[key]) pd[key].pairAddress    = lpResult.pairAddr;
+      if (lpResult.lpTokenAddr && pd[key]) pd[key].lpTokenAddress = lpResult.lpTokenAddr;
+    }));
+
     setPoolData(pd);
     setUserLP(ul);
     setLoading(false);
@@ -219,7 +222,8 @@ export default function Liquidity() {
       });
       addNotification(`Added ${parseFloat(amount0).toFixed(6)} ${selectedPair.token0} + ${parseFloat(amount1).toFixed(6)} ${selectedPair.token1} to pool`, 'success');
       setAmount0(''); setAmount1('');
-      await Promise.all([fetchAllPoolData(), refreshBalances()]);
+      invalidatePoolCache();
+      await Promise.all([fetchAllPoolData({ forceRefresh: true }), refreshBalances()]);
     } catch (err) {
       const msg = err.reason || err.message || 'Transaction failed';
       addNotification(msg.includes('rejected') ? 'Transaction rejected.' : `Failed: ${msg}`, 'error');
@@ -245,7 +249,8 @@ export default function Liquidity() {
       });
       addNotification('Liquidity removed successfully!', 'success');
       setLpRemoveAmount('');
-      await Promise.all([fetchAllPoolData(), refreshBalances()]);
+      invalidatePoolCache();
+      await Promise.all([fetchAllPoolData({ forceRefresh: true }), refreshBalances()]);
     } catch (err) {
       const msg = err.reason || err.message || 'Transaction failed';
       addNotification(msg.includes('rejected') ? 'Transaction rejected.' : `Failed: ${msg}`, 'error');

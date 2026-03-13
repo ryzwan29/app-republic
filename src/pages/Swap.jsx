@@ -10,6 +10,7 @@ import {
   getRouteSymbols,
   getOraclePrice,
   getOraclePriceImpact,
+  invalidatePoolCache,
 } from '../blockchain/amm.js';
 import { formatBalance, getWeb3Provider } from '../blockchain/evm.js';
 import { TOKENS, CONTRACTS } from '../blockchain/tokens.js';
@@ -189,6 +190,7 @@ export default function Swap() {
       const amountInUSD = parseFloat(fromAmount) * fromPrice;
       if (amountInUSD > 0) recordSwapVolume(fromToken, toToken, amountInUSD, evmAddress);
       setFromAmount(''); setToAmount('');
+      invalidatePoolCache(); // pool reserves berubah setelah swap
       await refreshBalances();
     } catch (err) {
       const msg = err.reason || err.message || 'Transaction failed';

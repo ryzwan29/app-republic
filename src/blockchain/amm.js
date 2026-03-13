@@ -2,6 +2,19 @@ import { ethers } from 'ethers';
 import { getProvider, getWeb3Provider } from './evm.js';
 import { CONTRACTS, TOKENS, ROUTER_ABI, FACTORY_ABI, PAIR_ABI, PAIR_CORE_ABI, LP_TOKEN_ABI, ERC20_ABI, ORACLE_ABI, SWAP_FEE, POOL_CONTRACTS } from './tokens.js';
 
+// ─── In-memory caches ──────────────────────────────────────────────────────────
+// lpToken dan token0 per pair — nilainya static, tidak pernah berubah
+const _lpTokenCache  = {};   // pairAddress → lpTokenAddress
+const _token0Cache   = {};   // pairAddress → token0Address
+
+// Pool reserves cache — TTL 30 detik supaya pindah halaman tidak fetch ulang
+const _poolCache     = {};   // key → { data, ts }
+const POOL_CACHE_TTL = 30_000;
+
+export function invalidatePoolCache() {
+  Object.keys(_poolCache).forEach(k => delete _poolCache[k]);
+}
+
 // ─── Oracle ────────────────────────────────────────────────────────────────────
 
 /**
@@ -247,14 +260,21 @@ export async function executeSwap({ fromSymbol, toSymbol, amountIn, amountOutMin
   return tx.wait();
 }
 
-export async function getPoolReserves(token0Symbol, token1Symbol) {
+export async function getPoolReserves(token0Symbol, token1Symbol, { forceRefresh = false } = {}) {
+  const cacheKey = `${token0Symbol}-${token1Symbol}`;
+
+  // Kembalikan cache kalau masih fresh (< 30 detik) dan tidak diminta paksa refresh
+  if (!forceRefresh && _poolCache[cacheKey]) {
+    const { data, ts } = _poolCache[cacheKey];
+    if (Date.now() - ts < POOL_CACHE_TTL) return data;
+  }
+
   try {
     const rpcProvider = getProvider();
 
     const token0 = TOKENS[token0Symbol];
     const token1 = TOKENS[token1Symbol];
     const addr0 = token0.isNative ? CONTRACTS.WRAI : token0.address;
-    const addr1 = token1.isNative ? CONTRACTS.WRAI : token1.address;
 
     // Ambil pair address dari POOL_CONTRACTS (hardcode, skip getPair() call)
     const otherSymbol = token0Symbol === 'WRAI' ? token1Symbol : token0Symbol;
@@ -264,28 +284,44 @@ export async function getPoolReserves(token0Symbol, token1Symbol) {
       return { reserve0: '0', reserve1: '0', totalSupply: '0', pairAddress: null, lpTokenAddress: null };
     }
 
-    // Pair contract — untuk reserves dan token0 order
     const pairContract = new ethers.Contract(pairAddress, PAIR_CORE_ABI, rpcProvider);
-    const [reserve0, reserve1] = await pairContract.getReserves();
-    const pToken0 = await pairContract.token0();
 
-    // LP Token contract — terpisah dari Pair, untuk totalSupply
-    const lpTokenAddress = await pairContract.lpToken();
+    // ── Ambil lpToken & token0 dari cache kalau sudah pernah di-fetch ──────────
+    let lpTokenAddress = _lpTokenCache[pairAddress];
+    let pToken0        = _token0Cache[pairAddress];
+
+    if (!lpTokenAddress || !pToken0) {
+      // Belum ada di cache — fetch paralel sekaligus
+      [lpTokenAddress, pToken0] = await Promise.all([
+        pairContract.lpToken(),
+        pairContract.token0(),
+      ]);
+      _lpTokenCache[pairAddress] = lpTokenAddress;
+      _token0Cache[pairAddress]  = pToken0;
+    }
+
+    // Fetch reserves + totalSupply paralel
     const lpTokenContract = new ethers.Contract(lpTokenAddress, LP_TOKEN_ABI, rpcProvider);
-    const totalSupply = await lpTokenContract.totalSupply();
+    const [[reserve0, reserve1], totalSupply] = await Promise.all([
+      pairContract.getReserves(),
+      lpTokenContract.totalSupply(),
+    ]);
 
     // Sesuaikan urutan reserve dengan urutan token0/token1 yang diminta
     const [r0, r1] = pToken0.toLowerCase() === addr0.toLowerCase()
       ? [reserve0, reserve1]
       : [reserve1, reserve0];
 
-    return {
+    const data = {
       reserve0: ethers.formatUnits(r0, token0.decimals),
       reserve1: ethers.formatUnits(r1, token1.decimals),
       totalSupply: ethers.formatEther(totalSupply),
       pairAddress,
       lpTokenAddress,
     };
+
+    _poolCache[cacheKey] = { data, ts: Date.now() };
+    return data;
   } catch (err) {
     console.error(`[getPoolReserves] ERROR for ${token0Symbol}/${token1Symbol}:`, err.message);
     return { reserve0: '0', reserve1: '0', totalSupply: '0', pairAddress: null, lpTokenAddress: null };
@@ -300,11 +336,15 @@ export async function getUserLPBalance(token0Symbol, token1Symbol, userAddress) 
     const pairAddress = POOL_CONTRACTS[otherSymbol];
     if (!pairAddress || pairAddress === '') return '0';
 
-    // Ambil LP Token address dari Pair, lalu cek balance user di LP Token contract
-    const pairContract = new ethers.Contract(pairAddress, PAIR_CORE_ABI, rpcProvider);
-    const lpTokenAddress = await pairContract.lpToken();
-    const lpTokenContract = new ethers.Contract(lpTokenAddress, LP_TOKEN_ABI, rpcProvider);
+    // Pakai cache lpToken kalau sudah ada — skip 1 RPC call
+    let lpTokenAddress = _lpTokenCache[pairAddress];
+    if (!lpTokenAddress) {
+      const pairContract = new ethers.Contract(pairAddress, PAIR_CORE_ABI, rpcProvider);
+      lpTokenAddress = await pairContract.lpToken();
+      _lpTokenCache[pairAddress] = lpTokenAddress;
+    }
 
+    const lpTokenContract = new ethers.Contract(lpTokenAddress, LP_TOKEN_ABI, rpcProvider);
     const balance = await lpTokenContract.balanceOf(userAddress);
     return ethers.formatEther(balance);
   } catch {
