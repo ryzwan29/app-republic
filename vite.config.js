@@ -3,6 +3,13 @@ import react from '@vitejs/plugin-react';
 import { pathToFileURL } from 'url';
 import path from 'path';
 
+// EVM providers tried in order — mirrors server.js
+const EVM_PROVIDERS = [
+  'https://evm-rpc.republicai.io',
+  'https://evmrpc-t.republicai.nodestake.org',
+  'https://testnet-evm-republic.provewithryd.xyz',
+];
+
 function apiRoutesPlugin() {
   return {
     name: 'api-routes',
@@ -17,6 +24,47 @@ function apiRoutesPlugin() {
           });
         });
       }
+
+      // ── /rpc → EVM JSON-RPC dengan fallback ke 3 provider ──────────────────
+      server.middlewares.use('/rpc', async (req, res) => {
+        const chunks = [];
+        req.on('data', c => chunks.push(c));
+        req.on('end', async () => {
+          const body = Buffer.concat(chunks);
+
+          for (const url of EVM_PROVIDERS) {
+            try {
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), 8000);
+
+              const upstream = await fetch(url, {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    body.length ? body : undefined,
+                signal:  controller.signal,
+              });
+
+              clearTimeout(timer);
+
+              if (!upstream.ok) {
+                console.warn(`[/rpc] ${url} → HTTP ${upstream.status}, trying next…`);
+                continue;
+              }
+
+              const data = Buffer.from(await upstream.arrayBuffer());
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(data);
+              return;
+            } catch (err) {
+              console.warn(`[/rpc] ${url} failed: ${err.message}, trying next…`);
+            }
+          }
+
+          console.error('[/rpc] All EVM providers failed');
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'All EVM RPC providers are unreachable.' }));
+        });
+      });
 
       // Helper untuk route handler dari file
       function registerRoute(route, file) {
@@ -85,14 +133,5 @@ export default defineConfig(({ mode }) => {
   Object.assign(process.env, env);
   return {
     plugins: [react(), apiRoutesPlugin()],
-    server: {
-      proxy: {
-        '/rpc': {
-          target: 'https://evm-rpc.republicai.io',
-          changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/rpc/, ''),
-        },
-      },
-    },
   };
 });

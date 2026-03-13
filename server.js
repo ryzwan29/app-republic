@@ -1,5 +1,4 @@
 import express from 'express';
-import { createProxyMiddleware } from 'http-proxy-middleware';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
@@ -17,23 +16,55 @@ try {
   }
 } catch { /* .env not found — rely on real env vars */ }
 
-const PORT       = parseInt(process.env.PORT, 10) || 3001; // default 3001 → reverse-proxy ke https domain
-const RPC_TARGET = process.env.RPC_TARGET || 'https://evm-rpc.republicai.io';
+const PORT = parseInt(process.env.PORT, 10) || 3001;
+
+// All known EVM RPC endpoints, tried in order on each request.
+// Override the first entry via RPC_TARGET env var if needed.
+const EVM_PROVIDERS = [
+  process.env.RPC_TARGET || 'https://evm-rpc.republicai.io',
+  'https://evmrpc-t.republicai.nodestake.org',
+  'https://testnet-evm-republic.provewithryd.xyz',
+];
 
 const app = express();
 
-// ── 1. /rpc → proxy to EVM RPC node ──────────────────────────────────────────
-app.use('/rpc', createProxyMiddleware({
-  target: RPC_TARGET,
-  changeOrigin: true,
-  pathRewrite: { '^/rpc': '' },
-  on: {
-    error: (err, req, res) => {
-      console.error('[/rpc proxy error]', err.message);
-      res.status(502).json({ error: 'RPC proxy error: ' + err.message });
-    },
-  },
-}));
+// ── 1. /rpc → EVM JSON-RPC with automatic fallback ───────────────────────────
+// Reads the raw body once, then tries each provider until one succeeds.
+app.use('/rpc', express.raw({ type: '*/*', limit: '2mb' }), async (req, res) => {
+  const body = req.body && req.body.length ? req.body : undefined;
+
+  for (const url of EVM_PROVIDERS) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+
+      const upstream = await fetch(url, {
+        method:  req.method === 'GET' ? 'GET' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    body,
+        signal:  controller.signal,
+      });
+
+      clearTimeout(timer);
+
+      if (!upstream.ok) {
+        console.warn(`[/rpc] ${url} → HTTP ${upstream.status}, trying next…`);
+        continue;
+      }
+
+      const data = await upstream.arrayBuffer();
+      res.setHeader('Content-Type', 'application/json');
+      res.status(200).send(Buffer.from(data));
+      return;
+
+    } catch (err) {
+      console.warn(`[/rpc] ${url} failed: ${err.message}, trying next…`);
+    }
+  }
+
+  console.error('[/rpc] All EVM providers failed');
+  res.status(502).json({ error: 'All EVM RPC providers are unreachable. Try again later.' });
+});
 
 // ── 2. /api/analyze → AI analysis handler ────────────────────────────────────
 app.use('/api/analyze', async (req, res) => {

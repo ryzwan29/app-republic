@@ -115,7 +115,7 @@ Classify this contract and explain it in plain English. Reply ONLY with a valid 
 
 {
   "contractType": "<one of: ERC-20 Token | ERC-721 NFT | ERC-1155 Multi-Token | DEX / AMM | Staking | Lending | Governance | Multisig | Proxy | Utility | Unknown>",
-  "summary": "<4-8 sentence plain-English description of what this contract does and how users interact with it>",
+  "summary": "<2-4 sentence plain-English description of what this contract does and how users interact with it>",
   "risks": [
     { "label": "<short risk name>", "level": "<high|medium|low>", "description": "<one sentence>" }
   ]

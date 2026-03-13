@@ -6,25 +6,24 @@ let provider = null;
 let _providerUrl = null;
 
 // ─── Provider dengan fallback otomatis ───────────────────────────────────────
-// Kalau getProvider() dipanggil pertama kali, atau provider lama down,
-// withEVMFallback akan coba tiap URL sampai ketemu yang hidup.
+// Di browser, selalu lewat /rpc (server proxy) supaya tidak kena CORS.
+// Di Node/SSR, pakai withEVMFallback langsung ke RPC node.
 export function getProvider() {
   if (!provider) {
-    // Inisialisasi dengan RydOne sebagai default sementara,
-    // lalu async resolve ke provider terbaik di background
-    const defaultUrl = 'https://evm-rpc.republicai.io';
-    provider = new ethers.JsonRpcProvider(defaultUrl);
-    _providerUrl = defaultUrl;
+    // Browser: pakai /rpc proxy — server yang handle fallback ke 3 provider
+    const rpcUrl = typeof window !== 'undefined'
+      ? `${window.location.origin}/rpc`
+      : 'https://evm-rpc.republicai.io';
 
-    // Resolve ke provider terbaik di background tanpa blocking
-    getActiveEVM().then(url => {
-      if (url !== _providerUrl) {
-        provider = new ethers.JsonRpcProvider(url);
-        _providerUrl = url;
-      }
-    }).catch(() => {});
+    provider = new ethers.JsonRpcProvider(rpcUrl);
+    _providerUrl = rpcUrl;
   }
   return provider;
+}
+
+export function resetProvider() {
+  provider = null;
+  _providerUrl = null;
 }
 
 /** Buat provider fresh dengan fallback, untuk operasi yang butuh provider baru */

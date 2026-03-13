@@ -14,9 +14,17 @@ import { NETWORK } from './tokens.js';
 
 // ── RPC provider (re-uses the same URL as the rest of the app) ────────────────
 let _provider = null;
+
+/** Reset the cached provider so the next probeContract() gets a fresh one.
+ *  Call this after a failed probe to avoid reusing a broken connection. */
+export function resetAnalyzerProvider() {
+  _provider = null;
+}
+
 export function getAnalyzerProvider() {
   if (!_provider) {
-    // Use Vite dev-server proxy (/rpc → RPC node) to avoid CORS in the browser.
+    // /rpc on the server has automatic fallback across all EVM providers.
+    // In SSR / Node contexts fall back to the primary URL directly.
     const rpcUrl = typeof window !== 'undefined'
       ? `${window.location.origin}/rpc`
       : NETWORK.rpcUrls[0];
@@ -340,7 +348,14 @@ export async function probeContract(address) {
   const checksummed = ethers.getAddress(address);
 
   // 2. Fetch bytecode
-  const bytecode = await provider.getCode(checksummed);
+  let bytecode;
+  try {
+    bytecode = await provider.getCode(checksummed);
+  } catch (err) {
+    // Bust the cached provider so the next call gets a fresh one
+    resetAnalyzerProvider();
+    throw new Error('Failed to reach the RPC node — please try again. (' + err.message + ')');
+  }
   if (!bytecode || bytecode === '0x') {
     throw new Error('No contract found at this address — it may be an EOA or not deployed on this network.');
   }
