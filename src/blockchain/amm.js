@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import { getProvider, getWeb3Provider } from './evm.js';
-import { CONTRACTS, TOKENS, ROUTER_ABI, FACTORY_ABI, PAIR_ABI, ERC20_ABI, ORACLE_ABI, SWAP_FEE } from './tokens.js';
+import { CONTRACTS, TOKENS, ROUTER_ABI, FACTORY_ABI, PAIR_ABI, PAIR_CORE_ABI, LP_TOKEN_ABI, ERC20_ABI, ORACLE_ABI, SWAP_FEE, POOL_CONTRACTS } from './tokens.js';
 
 // ─── Oracle ────────────────────────────────────────────────────────────────────
 
@@ -244,35 +244,31 @@ export async function executeSwap({ fromSymbol, toSymbol, amountIn, amountOutMin
 export async function getPoolReserves(token0Symbol, token1Symbol) {
   try {
     const rpcProvider = getProvider();
-    const factory = getFactoryContract(rpcProvider);
 
     const token0 = TOKENS[token0Symbol];
     const token1 = TOKENS[token1Symbol];
     const addr0 = token0.isNative ? CONTRACTS.WRAI : token0.address;
     const addr1 = token1.isNative ? CONTRACTS.WRAI : token1.address;
 
-    console.log(`[getPoolReserves] ${token0Symbol}/${token1Symbol}`, { addr0, addr1, factory: CONTRACTS.FACTORY });
-
-    const pairAddress = await factory.getPair(addr0, addr1);
-    console.log(`[getPoolReserves] pairAddress:`, pairAddress);
-
-    if (!pairAddress || pairAddress === ethers.ZeroAddress) {
-      console.warn(`[getPoolReserves] Pair not found for ${token0Symbol}/${token1Symbol}`);
-      return { reserve0: '0', reserve1: '0', totalSupply: '0', pairAddress: null };
+    // Ambil pair address dari POOL_CONTRACTS (hardcode, skip getPair() call)
+    const otherSymbol = token0Symbol === 'WRAI' ? token1Symbol : token0Symbol;
+    const pairAddress = POOL_CONTRACTS[otherSymbol];
+    if (!pairAddress || pairAddress === '') {
+      console.warn(`[getPoolReserves] POOL_CONTRACTS.${otherSymbol} belum diisi`);
+      return { reserve0: '0', reserve1: '0', totalSupply: '0', pairAddress: null, lpTokenAddress: null };
     }
 
-    const pair = getPairContract(pairAddress, rpcProvider);
-    const [reserve0, reserve1] = await pair.getReserves();
-    const totalSupply = await pair.totalSupply();
-    const pToken0 = await pair.token0();
+    // Pair contract — untuk reserves dan token0 order
+    const pairContract = new ethers.Contract(pairAddress, PAIR_CORE_ABI, rpcProvider);
+    const [reserve0, reserve1] = await pairContract.getReserves();
+    const pToken0 = await pairContract.token0();
 
-    console.log(`[getPoolReserves] reserves:`, {
-      reserve0: reserve0.toString(),
-      reserve1: reserve1.toString(),
-      totalSupply: totalSupply.toString(),
-      pToken0,
-    });
+    // LP Token contract — terpisah dari Pair, untuk totalSupply
+    const lpTokenAddress = await pairContract.lpToken();
+    const lpTokenContract = new ethers.Contract(lpTokenAddress, LP_TOKEN_ABI, rpcProvider);
+    const totalSupply = await lpTokenContract.totalSupply();
 
+    // Sesuaikan urutan reserve dengan urutan token0/token1 yang diminta
     const [r0, r1] = pToken0.toLowerCase() === addr0.toLowerCase()
       ? [reserve0, reserve1]
       : [reserve1, reserve0];
@@ -282,27 +278,134 @@ export async function getPoolReserves(token0Symbol, token1Symbol) {
       reserve1: ethers.formatUnits(r1, token1.decimals),
       totalSupply: ethers.formatEther(totalSupply),
       pairAddress,
+      lpTokenAddress,
     };
   } catch (err) {
     console.error(`[getPoolReserves] ERROR for ${token0Symbol}/${token1Symbol}:`, err.message);
-    return { reserve0: '0', reserve1: '0', totalSupply: '0', pairAddress: null };
+    return { reserve0: '0', reserve1: '0', totalSupply: '0', pairAddress: null, lpTokenAddress: null };
   }
 }
 
 export async function getUserLPBalance(token0Symbol, token1Symbol, userAddress) {
   try {
     const rpcProvider = getProvider();
-    const factory = getFactoryContract(rpcProvider);
-    const path = buildPath(token0Symbol, token1Symbol);
 
-    const pairAddress = await factory.getPair(path[0], path[1]);
-    if (!pairAddress || pairAddress === ethers.ZeroAddress) return '0';
+    const otherSymbol = token0Symbol === 'WRAI' ? token1Symbol : token0Symbol;
+    const pairAddress = POOL_CONTRACTS[otherSymbol];
+    if (!pairAddress || pairAddress === '') return '0';
 
-    const pair = getPairContract(pairAddress, rpcProvider);
-    const balance = await pair.balanceOf(userAddress);
+    // Ambil LP Token address dari Pair, lalu cek balance user di LP Token contract
+    const pairContract = new ethers.Contract(pairAddress, PAIR_CORE_ABI, rpcProvider);
+    const lpTokenAddress = await pairContract.lpToken();
+    const lpTokenContract = new ethers.Contract(lpTokenAddress, LP_TOKEN_ABI, rpcProvider);
+
+    const balance = await lpTokenContract.balanceOf(userAddress);
     return ethers.formatEther(balance);
   } catch {
     return '0';
+  }
+}
+
+/**
+ * Hitung estimasi APR dari event Swap dalam 24 jam terakhir.
+ * 
+ * Formula: APR = (Volume24h × fee% × 365 / TVL) × 100
+ * 
+ * Event Swap: (address sender, uint256 in0, uint256 in1, uint256 out0, uint256 out1, address to)
+ * Volume per swap = nilai token yang masuk ke pool (in0 atau in1, whichever > 0)
+ */
+export async function getPoolAPR(token0Symbol, token1Symbol, tvlUSD, tokenPrices) {
+  try {
+    if (!tvlUSD || tvlUSD <= 0) return null;
+
+    const otherSymbol = token0Symbol === 'WRAI' ? token1Symbol : token0Symbol;
+    const pairAddress = POOL_CONTRACTS[otherSymbol];
+    if (!pairAddress || pairAddress === '') return null;
+
+    const rpcProvider = getProvider();
+
+    // Republic Testnet RPC limit: max 10,000 blocks per getLogs query
+    const MAX_CHUNK = 9000;
+    const BLOCKS_PER_DAY = 43200;
+
+    let latestBlock;
+    try {
+      latestBlock = await rpcProvider.getBlockNumber();
+    } catch {
+      return null; // RPC down — return null bersih, jangan throw
+    }
+
+    const fromBlock = Math.max(0, latestBlock - BLOCKS_PER_DAY);
+
+    const swapInterface = new ethers.Interface([
+      'event Swap(address indexed sender, uint256 in0, uint256 in1, uint256 out0, uint256 out1, address indexed to)',
+    ]);
+    const topicHash = swapInterface.getEvent('Swap').topicHash;
+
+    // Pecah range jadi chunks max 9000 blocks
+    const chunks = [];
+    for (let start = fromBlock; start <= latestBlock; start += MAX_CHUNK) {
+      chunks.push({ from: start, to: Math.min(start + MAX_CHUNK - 1, latestBlock) });
+    }
+
+    // Query semua chunks, gabung hasilnya — skip chunk yang gagal
+    const allLogs = [];
+    for (const chunk of chunks) {
+      try {
+        const logs = await rpcProvider.getLogs({
+          address: pairAddress,
+          topics: [topicHash],
+          fromBlock: chunk.from,
+          toBlock: chunk.to,
+        });
+        allLogs.push(...logs);
+      } catch {
+        // chunk gagal (CORS/timeout) — skip saja, jangan throw
+      }
+    }
+
+    if (allLogs.length === 0) {
+      console.log(`[getPoolAPR] ${token0Symbol}/${token1Symbol}: 0 swap logs dalam ${chunks.length} chunks`);
+      return 0;
+    }
+
+    console.log(`[getPoolAPR] ${token0Symbol}/${token1Symbol}: ${allLogs.length} swap logs ditemukan`);
+
+    const token0 = TOKENS[token0Symbol];
+    const token1 = TOKENS[token1Symbol];
+    const p0 = tokenPrices[token0Symbol] || 0;
+    const p1 = tokenPrices[token1Symbol] || 0;
+
+    // Cek urutan token0/token1 di contract
+    const pairContract = new ethers.Contract(pairAddress, PAIR_CORE_ABI, rpcProvider);
+    const contractToken0 = (await pairContract.token0()).toLowerCase();
+    const addr0 = (token0.isNative ? CONTRACTS.WRAI : token0.address).toLowerCase();
+    const token0IsFirst = contractToken0 === addr0;
+
+    // Hitung total volume USD dari semua swap
+    let volumeUSD = 0;
+    for (const log of allLogs) {
+      try {
+        const parsed = swapInterface.parseLog(log);
+        const { in0, in1 } = parsed.args;
+        const [inA, inB] = token0IsFirst ? [in0, in1] : [in1, in0];
+        if (inA > 0n && p0 > 0) {
+          volumeUSD += parseFloat(ethers.formatUnits(inA, token0.decimals)) * p0;
+        } else if (inB > 0n && p1 > 0) {
+          volumeUSD += parseFloat(ethers.formatUnits(inB, token1.decimals)) * p1;
+        }
+      } catch { /* skip malformed log */ }
+    }
+
+    console.log(`[getPoolAPR] ${token0Symbol}/${token1Symbol}: volumeUSD=${volumeUSD.toFixed(2)}, tvlUSD=${tvlUSD.toFixed(2)}`);
+    if (volumeUSD <= 0) return 0;
+
+    const FEE = 0.003;
+    const apr = (volumeUSD * FEE * 365 / tvlUSD) * 100;
+    return apr;
+  } catch (err) {
+    console.warn('[getPoolAPR] error:', err.message);
+    return null; // selalu return null, jangan throw ke caller
   }
 }
 
@@ -361,25 +464,32 @@ export async function removeLiquidity({ token0Symbol, token1Symbol, lpAmount, sl
 
   const token0 = TOKENS[token0Symbol];
   const token1 = TOKENS[token1Symbol];
-  const path = buildPath(token0Symbol, token1Symbol);
 
-  const pairAddress = await factory.getPair(path[0], path[1]);
-  const pair = getPairContract(pairAddress, signerInstance);
+  const addr0 = token0.isNative ? CONTRACTS.WRAI : token0.address;
+  const addr1 = token1.isNative ? CONTRACTS.WRAI : token1.address;
+
+  const pairAddress = await factory.getPair(addr0, addr1);
+
+  // Ambil LP Token address dari Pair contract
+  const pairContract = new ethers.Contract(pairAddress, PAIR_CORE_ABI, signerInstance);
+  const lpTokenAddress = await pairContract.lpToken();
+  const lpTokenContract = new ethers.Contract(lpTokenAddress, LP_TOKEN_ABI, signerInstance);
 
   const lpParsed = ethers.parseEther(lpAmount.toString());
   const deadline = Math.floor(Date.now() / 1000) + 60 * 20;
 
-  const allowance = await pair.allowance(userAddress, CONTRACTS.ROUTER);
+  // Approve LP Token contract ke Router
+  const allowance = await lpTokenContract.allowance(userAddress, CONTRACTS.ROUTER);
   if (allowance < lpParsed) {
-    const approveTx = await pair.approve(CONTRACTS.ROUTER, ethers.MaxUint256);
+    const approveTx = await lpTokenContract.approve(CONTRACTS.ROUTER, ethers.MaxUint256);
     await approveTx.wait();
   }
 
   let tx;
   if (token0.isNative || token1.isNative) {
     const tokenSymbol = token0.isNative ? token1Symbol : token0Symbol;
-    const tokenAddr = TOKENS[tokenSymbol].address;
-    tx = await router.removeLiquidityETH(tokenAddr, lpParsed, 0n, 0n, userAddress, deadline);
+    const tokenAddress = TOKENS[tokenSymbol].address;
+    tx = await router.removeLiquidityETH(tokenAddress, lpParsed, 0n, 0n, userAddress, deadline);
   } else {
     tx = await router.removeLiquidity(
       token0.address, token1.address,

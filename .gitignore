@@ -32,6 +32,4 @@ Thumbs.db
 .parcel-cache/db/
 
 # DB
-db/*.db
-db/*.db-shm
-db/*.db-wal
+db/

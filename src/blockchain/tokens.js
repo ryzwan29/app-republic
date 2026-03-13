@@ -54,12 +54,14 @@ export const FACTORY_ABI = [
   'function allPairsLength() external view returns (uint)',
 ];
 
-// Pair contract — expose lpToken() untuk get LP token address
+// Pair contract ABI — sesuai Factory.sol (getReserves returns uint256, uint256)
 export const PAIR_CORE_ABI = [
   'function token0() external view returns (address)',
   'function token1() external view returns (address)',
-  'function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)',
+  'function getReserves() external view returns (uint256 reserve0, uint256 reserve1)',
   'function lpToken() external view returns (address)',
+  'function reserve0() external view returns (uint256)',
+  'function reserve1() external view returns (uint256)',
 ];
 
 // LP Token contract (terpisah dari Pair)
@@ -75,7 +77,7 @@ export const LP_TOKEN_ABI = [
 export const PAIR_ABI = [
   'function token0() external view returns (address)',
   'function token1() external view returns (address)',
-  'function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)',
+  'function getReserves() external view returns (uint256 reserve0, uint256 reserve1)',
   'function lpToken() external view returns (address)',
   'function totalSupply() external view returns (uint256)',
   'function balanceOf(address) external view returns (uint256)',
@@ -145,9 +147,19 @@ export const CONTRACTS = {
   STAKING: '0x0000000000000000000000000000000000000006',
   FAUCET: '0xdB7e012f6E3e6eD357D10bf39b9ca75C6fE8dFA1',
 };
-// 
-// LP WRAI/USDT : 0xa43341BCBD78AEefe1614C345bA06Bf660D3F90f 
-// 
+
+// Pair contract addresses — address pool untuk tiap pasangan WRAI
+// Isi dengan hasil getPair() dari Factory contract di Remix
+// Factory.getPair(WRAI, USDT) → isi di USDT
+// Factory.getPair(WRAI, USDC) → isi di USDC
+// Factory.getPair(WRAI, WETH) → isi di WETH
+// Factory.getPair(WRAI, WBTC) → isi di WBTC
+export const POOL_CONTRACTS = {
+  USDT: '0xa43341BCBD78AEefe1614C345bA06Bf660D3F90f',   // Factory.getPair(WRAI, USDT)
+  USDC: '0x606D627b7cF56B83956c475010ED2C9D3A798107',   // Factory.getPair(WRAI, USDC)
+  WETH: '0x377C35cfeA2A43b4A2cD18B28F80CF37D48AD3aF',   // Factory.getPair(WRAI, WETH)
+  WBTC: '0x6CFc435B3f3C8998208fB89E47a43E7F00aF1710',   // Factory.getPair(WRAI, WBTC)
+};
 
 
 export const TOKENS = {

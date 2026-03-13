@@ -13,6 +13,7 @@ import {
 } from '../blockchain/amm.js';
 import { formatBalance, getWeb3Provider } from '../blockchain/evm.js';
 import { TOKENS, CONTRACTS } from '../blockchain/tokens.js';
+import { recordSwapVolume } from '../blockchain/swapVolume.js';
 
 const PRICE_REFRESH_SEC = 60;
 
@@ -182,6 +183,11 @@ export default function Swap() {
         await executeSwap({ fromSymbol: fromToken, toSymbol: toToken, amountIn: fromAmount, amountOutMin: toAmount, slippage, userAddress: evmAddress });
       }
       addNotification(`Swapped ${fromAmount} ${fromToken} → ${parseFloat(toAmount || fromAmount).toFixed(6)} ${toToken}`, 'success');
+
+      // Record volume ke database server untuk kalkulasi APR
+      const fromPrice = oraclePrices[fromToken] || 0;
+      const amountInUSD = parseFloat(fromAmount) * fromPrice;
+      if (amountInUSD > 0) recordSwapVolume(fromToken, toToken, amountInUSD, evmAddress);
       setFromAmount(''); setToAmount('');
       await refreshBalances();
     } catch (err) {

@@ -3,8 +3,9 @@ import { useWallet } from '../App.jsx';
 import { TokenIcon } from '../components/TokenSelector.jsx';
 import { LoadingOverlay } from '../components/LoadingSpinner.jsx';
 import { getPoolReserves, getUserLPBalance, addLiquidity, removeLiquidity, getAllOraclePrices } from '../blockchain/amm.js';
+import { calcAPR, fetchAllVolumes24h } from '../blockchain/swapVolume.js';
 import { formatBalance } from '../blockchain/evm.js';
-import { POOL_PAIRS, TOKENS, CONTRACTS } from '../blockchain/tokens.js';
+import { POOL_PAIRS, TOKENS, CONTRACTS, POOL_CONTRACTS } from '../blockchain/tokens.js';
 import { ethers } from 'ethers';
 import { getProvider } from '../blockchain/evm.js';
 
@@ -45,30 +46,39 @@ function formatUSD(val) {
 }
 
 const PAIR_ABI_MIN = [
+  'function token0() view returns (address)',
+  'function getReserves() view returns (uint256 reserve0, uint256 reserve1)',
+  'function lpToken() view returns (address)',
+];
+
+const LP_TOKEN_ABI_MIN = [
   'function balanceOf(address) view returns (uint256)',
   'function totalSupply() view returns (uint256)',
-  'function getReserves() view returns (uint112, uint112, uint32)',
-  'function token0() view returns (address)',
   'function allowance(address,address) view returns (uint256)',
   'function approve(address,uint256) returns (bool)',
 ];
 
-const FACTORY_ABI_MIN = [
-  'function getPair(address,address) view returns (address)',
-];
-
-// Ambil LP balance langsung dari factory + pair contract, bypass buildPath
-async function getLPBalanceDirect(token0Addr, token1Addr, userAddress) {
+// Ambil LP balance dari LP Token contract
+// Pair address diambil dari POOL_CONTRACTS (sudah hardcode, tidak perlu getPair lagi)
+async function getLPBalanceDirect(token0Symbol, token1Symbol, userAddress) {
   try {
     const provider = getProvider();
-    const factory = new ethers.Contract(CONTRACTS.FACTORY, FACTORY_ABI_MIN, provider);
-    const pairAddr = await factory.getPair(token0Addr, token1Addr);
-    if (!pairAddr || pairAddr === ethers.ZeroAddress) return { balance: '0', pairAddr: null };
+
+    // Tentukan key — pair selalu WRAI vs token lain
+    const otherSymbol = token0Symbol === 'WRAI' ? token1Symbol : token0Symbol;
+    const pairAddr = POOL_CONTRACTS[otherSymbol];
+    if (!pairAddr || pairAddr === '') return { balance: '0', pairAddr: null, lpTokenAddr: null };
+
+    // Ambil LP Token address dari Pair
     const pair = new ethers.Contract(pairAddr, PAIR_ABI_MIN, provider);
-    const balance = await pair.balanceOf(userAddress);
-    return { balance: ethers.formatEther(balance), pairAddr };
+    const lpTokenAddr = await pair.lpToken();
+
+    // Baca balance dari LP Token contract
+    const lpToken = new ethers.Contract(lpTokenAddr, LP_TOKEN_ABI_MIN, provider);
+    const balance = await lpToken.balanceOf(userAddress);
+    return { balance: ethers.formatEther(balance), pairAddr, lpTokenAddr };
   } catch {
-    return { balance: '0', pairAddr: null };
+    return { balance: '0', pairAddr: null, lpTokenAddr: null };
   }
 }
 
@@ -86,6 +96,7 @@ export default function Liquidity() {
   const [loading, setLoading] = useState(false);
   const [txPending, setTxPending] = useState(false);
   const [tokenPrices, setTokenPrices] = useState({ WBTC: 0, WETH: 0, USDT: 1, USDC: 1, WRAI: 0, RAI: 0 });
+  const [aprData, setAprData] = useState({});
 
   useEffect(() => {
     fetchAllPoolData();
@@ -97,6 +108,26 @@ export default function Liquidity() {
     }, 60_000);
     return () => clearInterval(priceInterval);
   }, [evmAddress]);
+
+  // Fetch volume dari server lalu hitung APR — satu fetch untuk semua pair
+  useEffect(() => {
+    let cancelled = false;
+    async function updateAPR() {
+      const volumes = await fetchAllVolumes24h();
+      if (cancelled) return;
+      const aprs = {};
+      for (const pair of POOL_PAIRS) {
+        const key = `${pair.token0}-${pair.token1}`;
+        const pool = poolData[key];
+        if (!pool || parseFloat(pool.reserve0) === 0) { aprs[key] = null; continue; }
+        const tvl = calcTVL(pool, pair.token0, pair.token1, tokenPrices);
+        aprs[key] = calcAPR(pair.token0, pair.token1, tvl, volumes);
+      }
+      setAprData(aprs);
+    }
+    if (Object.keys(poolData).length > 0) updateAPR();
+    return () => { cancelled = true; };
+  }, [poolData, tokenPrices]);
 
   async function fetchAllPoolData() {
     setLoading(true);
@@ -115,10 +146,10 @@ export default function Liquidity() {
 
       if (evmAddress) {
         try {
-          // Pakai direct fetch, bukan lewat buildPath
-          const { balance, pairAddr } = await getLPBalanceDirect(t0addr, t1addr, evmAddress);
+          const { balance, pairAddr, lpTokenAddr } = await getLPBalanceDirect(pair.token0, pair.token1, evmAddress);
           ul[key] = balance;
           if (pairAddr && pd[key]) pd[key].pairAddress = pairAddr;
+          if (lpTokenAddr && pd[key]) pd[key].lpTokenAddress = lpTokenAddr;
         } catch {
           ul[key] = '0';
         }
@@ -263,6 +294,12 @@ export default function Liquidity() {
                   <div className="flex justify-between text-xs mt-2 pt-2 border-t border-blue-900/30">
                     <span className="text-green-500">My LP</span>
                     <span className="text-green-400 font-mono">{formatBalance(userLPBal)}</span>
+                  </div>
+                )}
+                {aprData[key] > 0 && (
+                  <div className="flex justify-between text-xs mt-1">
+                    <span className="text-slate-500">APR</span>
+                    <span className="text-green-400 font-mono">{aprData[key].toFixed(2)}%</span>
                   </div>
                 )}
               </div>
@@ -499,6 +536,7 @@ export default function Liquidity() {
           {/* TVL Banner */}
           {(() => {
             const tvl = calcTVL(currentPool, selectedPair.token0, selectedPair.token1, tokenPrices);
+            const apr = aprData[pairKey];
             return tvl > 0 ? (
               <div className="glass-card p-4 flex items-center justify-between">
                 <div>
@@ -507,8 +545,16 @@ export default function Liquidity() {
                 </div>
                 <div className="text-right">
                   <div className="text-xs text-slate-500 mb-0.5">Est. APR (from fees)</div>
-                  <div className="text-lg font-display font-semibold text-green-400">~variable</div>
-                  <div className="text-xs text-slate-500">0.3% per swap</div>
+                  {apr === null || apr === undefined ? (
+                    <div className="text-lg font-display font-semibold text-slate-400">No swaps yet</div>
+                  ) : apr === 0 ? (
+                    <div className="text-lg font-display font-semibold text-slate-400">No swaps yet</div>
+                  ) : (
+                    <div className="text-lg font-display font-semibold text-green-400">{apr.toFixed(2)}%</div>
+                  )}
+                  <div className="text-xs text-slate-500">
+                    {apr > 0 ? 'Based on 24h swap volume' : '0.3% per swap'}
+                  </div>
                 </div>
               </div>
             ) : null;
@@ -555,6 +601,16 @@ export default function Liquidity() {
                     <span className="text-white font-mono text-right">{loading ? '...' : v}</span>
                   </div>
                 ))}
+                {/* APR dinamis dari swap volume 24h */}
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Est. APR</span>
+                  <span className={`font-mono text-right ${aprData[pairKey] > 0 ? 'text-green-400' : 'text-slate-400'}`}>
+                    {loading ? '...' :
+                      (aprData[pairKey] == null || aprData[pairKey] === 0) ? 'No swaps yet' :
+                      `${aprData[pairKey].toFixed(2)}%`
+                    }
+                  </span>
+                </div>
               </div>
             </div>
           </div>
