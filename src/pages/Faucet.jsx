@@ -258,6 +258,19 @@ export default function Faucet() {
       const tx = await faucet.claim();
       await tx.wait();
 
+      // Catat claim ke database (IP + wallet rate limiting)
+      try {
+        await fetch('/api/verify-turnstile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action:        'record',
+            walletAddress: evmAddress,
+            txHash:        tx.hash,
+          }),
+        });
+      } catch { /* non-critical, jangan block user */ }
+
       removeNotification(pendingId2);
       setClaimStatus('success');
 
