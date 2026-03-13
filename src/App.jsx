@@ -145,6 +145,7 @@ function AppContent() {
     loadingBalances,
     connectEVM,
     connectCosmos,
+    connectKeplr: connectCosmos, // ✅ FIX: alias agar Stake.jsx bisa destructure connectKeplr
     disconnect,
     refreshBalances: () => refreshBalances(evmAddress || cosmosAddress),
     addNotification,

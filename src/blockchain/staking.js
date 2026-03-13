@@ -3,19 +3,21 @@ import { SigningStargateClient, GasPrice } from '@cosmjs/stargate';
 import { getProvider, getWeb3Provider } from './evm.js';
 import { CONTRACTS, STAKING_ABI } from './tokens.js';
 import { getValidators as getCosmosValidators, getStakingPool } from './cosmos.js';
+import { getActiveRPC, fetchWithFallback, withEVMFallback } from './rpcFallback.js';
 
-// ─── Chain config — sesuaikan dengan chain kalian ────────────────────────────
+// ─── Chain config ─────────────────────────────────────────────────────────────
 const CHAIN_ID = 'raitestnet_77701-1';
 const DENOM = 'arai';
-const RPC_ENDPOINT = 'https://rpc.republicai.io';
-const REST_ENDPOINT = 'https://rest.republicai.io'; // sesuaikan
+const DENOM_EXPONENT = 18;
+// Endpoint aktif di-resolve saat runtime via rpcFallback.js
+const RPC_ENDPOINT_DEFAULT = 'https://rpc.republicai.io';
 
 const KEPLR_CHAIN_CONFIG = {
   chainId: CHAIN_ID,
   chainName: 'Republic Testnet',
-  rpc: RPC_ENDPOINT,
-  rest: REST_ENDPOINT,
-  bip44: { coinType: 60 }, // ✅ EVM-Cosmos wajib 60, bukan 118
+  rpc: RPC_ENDPOINT_DEFAULT,
+  rest: 'https://rest.republicai.io',
+  bip44: { coinType: 60 }, // ✅ EVM-Cosmos wajib 60
   bech32Config: {
     bech32PrefixAccAddr: 'rai',
     bech32PrefixAccPub: 'raipub',
@@ -24,14 +26,16 @@ const KEPLR_CHAIN_CONFIG = {
     bech32PrefixConsAddr: 'raivalcons',
     bech32PrefixConsPub: 'raivalconspub',
   },
-  currencies: [{ coinDenom: 'RAI', coinMinimalDenom: DENOM, coinDecimals: 18 }],
+  currencies: [{ coinDenom: 'RAI', coinMinimalDenom: DENOM, coinDecimals: DENOM_EXPONENT }],
   feeCurrencies: [{
     coinDenom: 'RAI',
     coinMinimalDenom: DENOM,
-    coinDecimals: 18,
+    coinDecimals: DENOM_EXPONENT,
     gasPriceStep: { low: 10000000000, average: 20000000000, high: 40000000000 },
   }],
-  stakeCurrency: { coinDenom: 'RAI', coinMinimalDenom: DENOM, coinDecimals: 18 },
+  stakeCurrency: { coinDenom: 'RAI', coinMinimalDenom: DENOM, coinDecimals: DENOM_EXPONENT },
+  // ✅ FIX 1: Wajib untuk EVM-Cosmos — tanpa ini Keplr tidak pakai eth key
+  features: ['eth-address-gen', 'eth-key-sign'],
 };
 
 const COSMOS_FEE = {
@@ -48,38 +52,54 @@ async function getKeplrSigningClient() {
   const keplr = window.keplr;
   if (!keplr) throw new Error('Keplr wallet not found. Please install Keplr extension.');
 
-  // Suggest chain supaya Keplr kenal chain ini dengan coinType 60
-  try { await keplr.experimentalSuggestChain(KEPLR_CHAIN_CONFIG); } catch {}
+  // Resolve RPC aktif saat runtime — fallback kalau provider utama down
+  const activeRpc = await getActiveRPC().catch(() => RPC_ENDPOINT_DEFAULT);
 
+  try { await keplr.experimentalSuggestChain({ ...KEPLR_CHAIN_CONFIG, rpc: activeRpc }); } catch {}
   await keplr.enable(CHAIN_ID);
 
-  // ✅ getOfflineSignerOnlyAmino — wajib untuk EVM-Cosmos
-  // Kalau pakai getOfflineSigner biasa → error "unable to resolve type ethsecp256k1.PubKey"
+  // ✅ FIX 2: getOfflineSignerOnlyAmino — WAJIB untuk EVM-Cosmos chain
+  // getOfflineSigner biasa → Direct/Protobuf sign → embed pubkey typeURL di SignDoc
+  // → error "unable to resolve /ethermint.crypto.v1.ethsecp256k1.PubKey"
+  // Amino sign tidak embed typeURL → error hilang sepenuhnya
   const offlineSigner = keplr.getOfflineSignerOnlyAmino(CHAIN_ID);
   const accounts = await offlineSigner.getAccounts();
   if (!accounts.length) throw new Error('No accounts found in Keplr');
 
+  // ✅ FIX 3: Custom signer wrapper — safety net kalau Keplr return algo unexpected
+  // Hardcode algo ke ethsecp256k1 dan bypass CosmJS dengan signAmino langsung ke Keplr
+  const key = await keplr.getKey(CHAIN_ID);
+  let signer = offlineSigner;
+  if (accounts[0]?.algo !== 'ethsecp256k1') {
+    signer = {
+      getAccounts: async () => [{
+        address: accounts[0].address,
+        algo: 'ethsecp256k1',
+        pubkey: key.pubKey,
+      }],
+      signAmino: async (signerAddress, signDoc) => {
+        return keplr.signAmino(CHAIN_ID, signerAddress, signDoc);
+      },
+    };
+  }
+
   const client = await SigningStargateClient.connectWithSigner(
-    RPC_ENDPOINT,
-    offlineSigner,
+    activeRpc,
+    signer,
     { gasPrice: GasPrice.fromString(`20000000000${DENOM}`) }
   );
 
   return { client, address: accounts[0].address };
 }
 
-// ─── Validator list ───────────────────────────────────────────────────────────
-
 // ─── Validator cache ──────────────────────────────────────────────────────────
 let _validatorCache = null;
 let _validatorCacheTime = 0;
 let _validatorFetchPromise = null;
-const CACHE_TTL = 60_000; // 1 menit
+const CACHE_TTL = 60_000;
 
 export async function prefetchValidators() {
-  // Kalau udah ada cache fresh, skip
   if (_validatorCache && Date.now() - _validatorCacheTime < CACHE_TTL) return;
-  // Kalau lagi fetch, tunggu yang udah jalan
   if (_validatorFetchPromise) return _validatorFetchPromise;
   _validatorFetchPromise = _fetchAndCacheValidators();
   try { await _validatorFetchPromise; } finally { _validatorFetchPromise = null; }
@@ -117,21 +137,45 @@ async function _fetchAndCacheValidators() {
 }
 
 export async function getValidators() {
-  // Pakai cache kalau tersedia dan masih fresh
   if (_validatorCache && Date.now() - _validatorCacheTime < CACHE_TTL) {
     return _validatorCache;
   }
-  // Kalau lagi prefetch, tunggu
   if (_validatorFetchPromise) {
     await _validatorFetchPromise;
     return _validatorCache || [];
   }
-  // Fetch fresh
   await prefetchValidators();
   return _validatorCache || [];
 }
 
-export async function getUserStakeInfo(userAddress, validatorAddress) {
+// ─── getUserStakeInfo — dual path: Cosmos REST (Keplr) atau EVM contract ──────
+// ✅ FIX 4: Keplr pakai bech32 address (rai1...) — EVM contract butuh hex (0x...)
+// Cross-query antara keduanya selalu return 0 karena format address beda
+
+async function getUserStakeInfoCosmos(walletAddress, validatorAddress) {
+  try {
+    const [delData, rewData] = await Promise.all([
+      fetchWithFallback(`/cosmos/staking/v1beta1/delegations/${walletAddress}`),
+      fetchWithFallback(`/cosmos/distribution/v1beta1/delegators/${walletAddress}/rewards/${validatorAddress}`),
+    ]);
+
+    const delegation = delData.delegation_responses?.find(
+      (d) => d.delegation.validator_address === validatorAddress
+    );
+    const stakedArai = delegation?.balance?.amount || '0';
+    const stakedAmount = (parseFloat(stakedArai) / 10 ** DENOM_EXPONENT).toString();
+
+    const raiReward = rewData.rewards?.find((r) => r.denom === DENOM);
+    const rewardArai = raiReward?.amount || '0';
+    const pendingReward = (parseFloat(rewardArai) / 10 ** DENOM_EXPONENT).toString();
+
+    return { stakedAmount, pendingReward };
+  } catch {
+    return { stakedAmount: '0', pendingReward: '0' };
+  }
+}
+
+async function getUserStakeInfoEVM(userAddress, validatorAddress) {
   const rpcProvider = getProvider();
   try {
     const staking = getStakingContract(rpcProvider);
@@ -146,6 +190,15 @@ export async function getUserStakeInfo(userAddress, validatorAddress) {
   } catch {
     return { stakedAmount: '0', pendingReward: '0' };
   }
+}
+
+// walletType: 'keplr' | 'evm' | null
+export async function getUserStakeInfo(userAddress, validatorAddress, walletType = 'evm') {
+  if (!userAddress) return { stakedAmount: '0', pendingReward: '0' };
+  if (walletType === 'keplr') {
+    return getUserStakeInfoCosmos(userAddress, validatorAddress);
+  }
+  return getUserStakeInfoEVM(userAddress, validatorAddress);
 }
 
 export async function getStakingAPR() {
@@ -183,11 +236,10 @@ export async function getTotalUserStaked(userAddress) {
 }
 
 // ─── Stake ────────────────────────────────────────────────────────────────────
-// walletType: 'keplr' | 'evm'
 export async function stake(validatorAddress, amount, walletType = 'evm') {
   if (walletType === 'keplr') {
     const { client, address } = await getKeplrSigningClient();
-    const amountInArai = (parseFloat(amount) * 1e18).toFixed(0);
+    const amountInArai = (parseFloat(amount) * 10 ** DENOM_EXPONENT).toFixed(0);
     const result = await client.delegateTokens(
       address,
       validatorAddress,
@@ -198,7 +250,6 @@ export async function stake(validatorAddress, amount, walletType = 'evm') {
     return result;
   }
 
-  // EVM path via smart contract
   const web3Provider = await getWeb3Provider();
   const signerInstance = await web3Provider.getSigner();
   const staking = getStakingContract(signerInstance);
@@ -211,7 +262,7 @@ export async function stake(validatorAddress, amount, walletType = 'evm') {
 export async function unstake(validatorAddress, amount, walletType = 'evm') {
   if (walletType === 'keplr') {
     const { client, address } = await getKeplrSigningClient();
-    const amountInArai = (parseFloat(amount) * 1e18).toFixed(0);
+    const amountInArai = (parseFloat(amount) * 10 ** DENOM_EXPONENT).toFixed(0);
     const result = await client.undelegateTokens(
       address,
       validatorAddress,

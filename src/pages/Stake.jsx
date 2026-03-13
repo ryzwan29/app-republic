@@ -55,9 +55,11 @@ export default function Stake() {
       // Fetch user stake info kalau ada wallet yang connect (EVM atau Keplr)
       if (activeAddress && vals.length) {
         const info = {};
+        // ✅ FIX: kirim walletType agar getUserStakeInfo pakai path yang benar
+        // Keplr → Cosmos REST API (bech32 address), EVM → smart contract (hex address)
         for (const v of vals.slice(0, 10)) {
           try {
-            info[v.address] = await getUserStakeInfo(activeAddress, v.address);
+            info[v.address] = await getUserStakeInfo(activeAddress, v.address, walletType);
           } catch {
             info[v.address] = { stakedAmount: '0', pendingReward: '0' };
           }

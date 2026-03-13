@@ -8,23 +8,31 @@ import { getUserLPBalance } from '../blockchain/amm.js';
 import { getTotalUserStaked } from '../blockchain/staking.js';
 import { formatBalance } from '../blockchain/evm.js';
 import { POOL_PAIRS } from '../blockchain/tokens.js';
+import { fetchWithFallback } from '../blockchain/rpcFallback.js';
+
+const DENOM_EXPONENT = 18;
 
 export default function Dashboard() {
-  const { evmAddress, cosmosAddress, balances, loadingBalances, connectEVM, connectCosmos, refreshBalances } = useWallet();
+  const { evmAddress, cosmosAddress, balances, loadingBalances, walletType, connectEVM, connectCosmos, refreshBalances } = useWallet();
   const [chainInfo, setChainInfo] = useState({ height: '—', time: '' });
   const [stakingPool, setStakingPool] = useState({ bondedTokens: '0' });
   const [lpPositions, setLpPositions] = useState([]);
   const [totalStaked, setTotalStaked] = useState('0');
+  const [totalCosmosStaked, setTotalCosmosStaked] = useState('0');
   const [delegations, setDelegations] = useState([]);
   const [rewards, setRewards] = useState([]);
+  const [validatorNames, setValidatorNames] = useState({});
   const [loadingExtra, setLoadingExtra] = useState(false);
 
   useEffect(() => {
     fetchChainData();
   }, []);
 
+  // ✅ FIX 1: Trigger fetchUserData untuk KEDUA jenis wallet
+  // Sebelumnya hanya if (evmAddress) → Keplr-only tidak pernah fetch
   useEffect(() => {
-    if (evmAddress) {
+    const activeAddress = evmAddress || cosmosAddress;
+    if (activeAddress) {
       fetchUserData();
     }
   }, [evmAddress, cosmosAddress]);
@@ -40,23 +48,26 @@ export default function Dashboard() {
   async function fetchUserData() {
     setLoadingExtra(true);
     try {
-      // LP positions
-      const positions = [];
-      for (const pair of POOL_PAIRS) {
-        try {
-          const bal = await getUserLPBalance(pair.token0, pair.token1, evmAddress);
-          if (parseFloat(bal) > 0) {
-            positions.push({ ...pair, lpBalance: bal });
-          }
-        } catch {}
+      // LP positions — hanya untuk EVM
+      if (evmAddress) {
+        const positions = [];
+        for (const pair of POOL_PAIRS) {
+          try {
+            const bal = await getUserLPBalance(pair.token0, pair.token1, evmAddress);
+            if (parseFloat(bal) > 0) {
+              positions.push({ ...pair, lpBalance: bal });
+            }
+          } catch {}
+        }
+        setLpPositions(positions);
+
+        // ✅ FIX 2: EVM staked hanya di-query kalau evmAddress ada
+        const staked = await getTotalUserStaked(evmAddress);
+        setTotalStaked(staked);
       }
-      setLpPositions(positions);
 
-      // Total EVM staked
-      const staked = await getTotalUserStaked(evmAddress);
-      setTotalStaked(staked);
-
-      // Cosmos delegations
+      // ✅ FIX 3: Cosmos delegations — untuk Keplr
+      // Sebelumnya ada tapi tidak pernah dipakai untuk menghitung totalStaked
       if (cosmosAddress) {
         const [dels, rwds] = await Promise.all([
           getDelegations(cosmosAddress),
@@ -64,15 +75,56 @@ export default function Dashboard() {
         ]);
         setDelegations(dels);
         setRewards(rwds);
+
+        // ✅ FIX 4: Hitung totalCosmosStaked dari delegations REST API
+        const cosmosTotal = dels.reduce((acc, d) => {
+          return acc + parseFloat(d.balance?.amount || '0');
+        }, 0);
+        setTotalCosmosStaked((cosmosTotal / 10 ** DENOM_EXPONENT).toString());
+
+        // Ambil nama validator untuk setiap delegasi
+        if (dels.length > 0) {
+          await fetchValidatorNames(dels.map(d => d.delegation.validator_address));
+        }
       }
     } catch {}
     setLoadingExtra(false);
   }
 
+  async function fetchValidatorNames(validatorAddresses) {
+    const names = {};
+    await Promise.all(
+      validatorAddresses.map(async (addr) => {
+        try {
+          const data = await fetchWithFallback(`/cosmos/staking/v1beta1/validators/${addr}`);
+          names[addr] = data.validator?.description?.moniker || addr.slice(0, 16) + '...';
+        } catch {
+          names[addr] = addr.slice(0, 16) + '...';
+        }
+      })
+    );
+    setValidatorNames(names);
+  }
+
+  // Total rewards semua validator
   const totalRewards = rewards.reduce((acc, r) => {
     const raiReward = r.reward?.find(c => c.denom === 'arai');
-    return acc + (raiReward ? parseFloat(raiReward.amount) / 1e18 : 0);
+    return acc + (raiReward ? parseFloat(raiReward.amount) / 10 ** DENOM_EXPONENT : 0);
   }, 0);
+
+  // Reward per validator (map validatorAddress → amount)
+  const rewardsByValidator = rewards.reduce((acc, r) => {
+    const raiReward = r.reward?.find(c => c.denom === 'arai');
+    if (raiReward) {
+      acc[r.validator_address] = parseFloat(raiReward.amount) / 10 ** DENOM_EXPONENT;
+    }
+    return acc;
+  }, {});
+
+  // ✅ FIX 5: Tampilkan staked yang benar sesuai wallet type
+  const displayTotalStaked = walletType === 'keplr' ? totalCosmosStaked : totalStaked;
+  // Kalau kedua wallet connect, gabungkan
+  const combinedStaked = (parseFloat(totalStaked) + parseFloat(totalCosmosStaked)).toString();
 
   if (!evmAddress && !cosmosAddress) {
     return (
@@ -120,7 +172,7 @@ export default function Dashboard() {
         {evmAddress && (
           <div className="glass-card p-4">
             <div className="flex items-center gap-2 mb-2">
-              <img src="https://upload.wikimedia.org/wikipedia/commons/3/36/MetaMask_Fox.svg" alt="MM" className="w-5 h-5" />
+              <img src="/images/metamask.png" alt="MM" className="w-5 h-5" />
               <span className="text-xs text-slate-500 font-display uppercase tracking-wider">EVM Address</span>
               <span className="badge-green ml-auto">Connected</span>
             </div>
@@ -130,7 +182,7 @@ export default function Dashboard() {
         {cosmosAddress && (
           <div className="glass-card p-4">
             <div className="flex items-center gap-2 mb-2">
-              <div className="w-5 h-5 rounded-full bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center text-xs font-bold text-white">K</div>
+              <img src="/images/keplr.png" alt="Keplr" className="w-5 h-5" />
               <span className="text-xs text-slate-500 font-display uppercase tracking-wider">Cosmos Address</span>
               <span className="badge-blue ml-auto">Connected</span>
             </div>
@@ -143,7 +195,7 @@ export default function Dashboard() {
       <div className="glass-card p-6 mb-6">
         <div className="flex items-center justify-between mb-5">
           <h2 className="font-display font-semibold text-white text-lg">Token Balances</h2>
-          <span className="badge-blue text-xs">EVM</span>
+          <span className="badge-blue text-xs">{walletType === 'keplr' ? 'Cosmos' : 'EVM'}</span>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {Object.entries(balances).map(([sym, bal]) => (
@@ -161,16 +213,32 @@ export default function Dashboard() {
       {/* Stats grid */}
       <div className="grid sm:grid-cols-3 gap-4 mb-6">
         <div className="stat-card">
-          <div className="text-xs text-slate-500 font-display uppercase tracking-wider mb-1">Total Staked (EVM)</div>
-          <div className="font-display font-bold text-2xl text-white">
-            {loadingExtra ? <Skeleton className="w-24 h-7" /> : `${formatBalance(totalStaked)} RAI`}
+          <div className="text-xs text-slate-500 font-display uppercase tracking-wider mb-1">
+            {/* ✅ FIX 6: Label dinamis sesuai wallet type */}
+            Total Staked {evmAddress && cosmosAddress ? '(Combined)' : walletType === 'keplr' ? '(Cosmos)' : '(EVM)'}
           </div>
+          <div className="font-display font-bold text-2xl text-white">
+            {loadingExtra
+              ? <Skeleton className="w-24 h-7" />
+              : `${formatBalance(evmAddress && cosmosAddress ? combinedStaked : displayTotalStaked)} RAI`
+            }
+          </div>
+          {/* Sub-labels kalau dua wallet connect */}
+          {evmAddress && cosmosAddress && !loadingExtra && (
+            <div className="mt-1.5 space-y-0.5">
+              <div className="text-xs text-slate-500">EVM: <span className="text-slate-300 font-mono">{formatBalance(totalStaked)} RAI</span></div>
+              <div className="text-xs text-slate-500">Cosmos: <span className="text-slate-300 font-mono">{formatBalance(totalCosmosStaked)} RAI</span></div>
+            </div>
+          )}
         </div>
         <div className="stat-card">
           <div className="text-xs text-slate-500 font-display uppercase tracking-wider mb-1">Pending Rewards</div>
           <div className="font-display font-bold text-2xl text-green-400">
             {loadingExtra ? <Skeleton className="w-24 h-7" /> : `${totalRewards.toFixed(4)} RAI`}
           </div>
+          {!loadingExtra && cosmosAddress && delegations.length > 0 && (
+            <div className="text-xs text-slate-500 mt-1">From {delegations.length} validator{delegations.length !== 1 ? 's' : ''}</div>
+          )}
         </div>
         <div className="stat-card">
           <div className="text-xs text-slate-500 font-display uppercase tracking-wider mb-1">LP Positions</div>
@@ -179,6 +247,53 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* ✅ FIX 7: Staking Positions section — sebelumnya ada di state tapi tidak pernah dirender */}
+      {cosmosAddress && (loadingExtra || delegations.length > 0) && (
+        <div className="glass-card p-6 mb-6">
+          <div className="flex items-center justify-between mb-5">
+            <h2 className="font-display font-semibold text-white text-lg">Staking Positions</h2>
+            <Link to="/stake" className="text-blue-400 text-sm hover:text-blue-300 transition-colors font-display">Manage →</Link>
+          </div>
+
+          {loadingExtra ? (
+            <div className="space-y-3">
+              {[1, 2].map(i => <Skeleton key={i} className="h-16 w-full" />)}
+            </div>
+          ) : delegations.length === 0 ? (
+            <p className="text-slate-500 text-sm text-center py-4">No active delegations</p>
+          ) : (
+            <div className="space-y-3">
+              {delegations.map((del, i) => {
+                const valAddr = del.delegation.validator_address;
+                const stakedArai = parseFloat(del.balance?.amount || '0');
+                const stakedRAI = stakedArai / 10 ** DENOM_EXPONENT;
+                const pendingReward = rewardsByValidator[valAddr] || 0;
+
+                return (
+                  <div key={i} className="flex items-center justify-between p-4 rounded-xl bg-black/20 border border-blue-900/30 hover:border-blue-500/30 transition-colors">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-display font-semibold text-white text-sm truncate">
+                        {validatorNames[valAddr] || <Skeleton className="w-32 h-4 inline-block" />}
+                      </div>
+                      <div className="font-mono text-xs text-slate-500 truncate mt-0.5">{valAddr.slice(0, 28)}...</div>
+                    </div>
+                    <div className="text-right ml-4 shrink-0">
+                      <div className="font-mono text-sm text-white font-semibold">{stakedRAI.toFixed(4)} RAI</div>
+                      {pendingReward > 0 && (
+                        <div className="font-mono text-xs text-green-400 mt-0.5">+{pendingReward.toFixed(6)} RAI</div>
+                      )}
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        {pendingReward > 0 ? 'staked · rewards pending' : 'staked'}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* LP Positions */}
       {lpPositions.length > 0 && (

@@ -1,23 +1,22 @@
 import { COSMOS_CONFIG } from './tokens.js';
+import { fetchWithFallback, getActiveRPC } from './rpcFallback.js';
 
-const REST = 'https://rest.republicai.io';
-const RPC = 'https://rpc.republicai.io';
-
+// fetchREST sekarang pakai fetchWithFallback — otomatis coba provider lain kalau gagal
 async function fetchREST(path) {
-  const res = await fetch(`${REST}${path}`);
-  if (!res.ok) throw new Error(`REST error: ${res.status}`);
-  return res.json();
+  return fetchWithFallback(path);
 }
 
 export async function connectKeplr() {
   if (!window.keplr) throw new Error('Keplr wallet is not installed. Please install Keplr to continue.');
 
+  // Ambil RPC aktif untuk suggest chain ke Keplr
+  const activeRpc = await getActiveRPC().catch(() => COSMOS_CONFIG.rpc);
+
   try {
-    // Suggest chain if not added
     await window.keplr.experimentalSuggestChain({
       chainId: COSMOS_CONFIG.chainId,
       chainName: COSMOS_CONFIG.chainName,
-      rpc: COSMOS_CONFIG.rpc,
+      rpc: activeRpc,
       rest: COSMOS_CONFIG.rest,
       bip44: { coinType: 60 },
       bech32Config: {
@@ -31,9 +30,10 @@ export async function connectKeplr() {
       currencies: COSMOS_CONFIG.currencies,
       feeCurrencies: [{ coinDenom: 'RAI', coinMinimalDenom: 'arai', coinDecimals: 18, gasPriceStep: { low: 0.01, average: 0.025, high: 0.04 } }],
       stakeCurrency: { coinDenom: 'RAI', coinMinimalDenom: 'arai', coinDecimals: 18 },
+      // ✅ Wajib untuk EVM-Cosmos chain
+      features: ['eth-address-gen', 'eth-key-sign'],
     });
 
-    // Force Keplr to show account picker every time
     await window.keplr.disable(COSMOS_CONFIG.chainId);
     await window.keplr.enable(COSMOS_CONFIG.chainId);
     const offlineSigner = window.keplr.getOfflineSigner(COSMOS_CONFIG.chainId);
