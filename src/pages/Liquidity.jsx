@@ -164,11 +164,14 @@ export default function Liquidity() {
   const currentPool = poolData[pairKey] || { reserve0: '0', reserve1: '0', totalSupply: '0' };
   const currentLP = userLP[pairKey] || '0';
 
+  const dec0 = TOKENS[selectedPair.token0]?.decimals ?? 18;
+  const dec1 = TOKENS[selectedPair.token1]?.decimals ?? 18;
+
   function handleAmount0Change(val) {
     setAmount0(val);
     if (val && parseFloat(currentPool.reserve0) > 0) {
       const ratio = parseFloat(currentPool.reserve1) / parseFloat(currentPool.reserve0);
-      setAmount1((parseFloat(val) * ratio).toFixed(8));
+      setAmount1((parseFloat(val) * ratio).toFixed(dec1));
     }
   }
 
@@ -176,22 +179,24 @@ export default function Liquidity() {
     setAmount1(val);
     if (val && parseFloat(currentPool.reserve1) > 0) {
       const ratio = parseFloat(currentPool.reserve0) / parseFloat(currentPool.reserve1);
-      setAmount0((parseFloat(val) * ratio).toFixed(8));
+      setAmount0((parseFloat(val) * ratio).toFixed(dec0));
     }
   }
 
   // Set amount berdasarkan % dari balance
   function setAmountByPct(pct, token, setter, otherSetter, isToken0) {
     const bal = parseFloat(balances[token] || '0');
-    const val = (bal * pct / 100).toFixed(8);
+    const dec = isToken0 ? dec0 : dec1;
+    const otherDec = isToken0 ? dec1 : dec0;
+    const val = (bal * pct / 100).toFixed(dec);
     setter(val);
     // Auto-calculate pasangan
     if (isToken0 && parseFloat(currentPool.reserve0) > 0) {
       const ratio = parseFloat(currentPool.reserve1) / parseFloat(currentPool.reserve0);
-      otherSetter((parseFloat(val) * ratio).toFixed(8));
+      otherSetter((parseFloat(val) * ratio).toFixed(otherDec));
     } else if (!isToken0 && parseFloat(currentPool.reserve1) > 0) {
       const ratio = parseFloat(currentPool.reserve0) / parseFloat(currentPool.reserve1);
-      otherSetter((parseFloat(val) * ratio).toFixed(8));
+      otherSetter((parseFloat(val) * ratio).toFixed(otherDec));
     }
   }
 

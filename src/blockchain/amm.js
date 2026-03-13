@@ -423,8 +423,15 @@ export async function addLiquidity({ token0Symbol, token1Symbol, amount0, amount
   const token0 = TOKENS[token0Symbol];
   const token1 = TOKENS[token1Symbol];
 
-  const amount0Parsed = ethers.parseUnits(amount0.toString(), token0.decimals);
-  const amount1Parsed = ethers.parseUnits(amount1.toString(), token1.decimals);
+  // Truncate ke max decimals token — cegah "too many decimals" error dari ethers
+  function truncateDecimals(val, dec) {
+    const s = val.toString();
+    const dot = s.indexOf('.');
+    if (dot === -1 || s.length - dot - 1 <= dec) return s;
+    return s.slice(0, dot + dec + 1);
+  }
+  const amount0Parsed = ethers.parseUnits(truncateDecimals(amount0, token0.decimals), token0.decimals);
+  const amount1Parsed = ethers.parseUnits(truncateDecimals(amount1, token1.decimals), token1.decimals);
   const deadline = Math.floor(Date.now() / 1000) + 60 * 20;
 
   for (const [symbol, amount] of [[token0Symbol, amount0Parsed], [token1Symbol, amount1Parsed]]) {
