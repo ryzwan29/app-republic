@@ -129,3 +129,21 @@ export async function getRewards(address) {
     return [];
   }
 }
+
+export async function getAnnualProvisions() {
+  try {
+    const data = await fetchREST('/cosmos/mint/v1beta1/annual_provisions');
+    return data.annual_provisions || '0';
+  } catch {
+    return '0';
+  }
+}
+
+export async function getInflation() {
+  try {
+    const data = await fetchREST('/cosmos/mint/v1beta1/inflation');
+    return data.inflation || '0';
+  } catch {
+    return '0';
+  }
+}

@@ -4,15 +4,15 @@ export const NETWORK = {
   chainIdDec: 77701,
   chainName: 'Republic Testnet',
   nativeCurrency: { name: 'RAI', symbol: 'RAI', decimals: 18 },
-  rpcUrls: ['https://testnet-evm-republic.provewithryd.xyz'],
+  rpcUrls: ['https://evm-rpc.republicai.io'],
   blockExplorerUrls: [],
 };
 
 export const COSMOS_CONFIG = {
   chainId: 'raitestnet_77701-1',
   chainName: 'Republic Testnet',
-  rpc: 'https://testnet-rpc-republic.provewithryd.xyz',
-  rest: 'https://testnet-api-republic.provewithryd.xyz',
+  rpc: 'https://rpc.republicai.io',
+  rest: 'https://rest.republicai.io',
   bech32Prefix: 'rai',
   currencies: [{ coinDenom: 'RAI', coinMinimalDenom: 'arai', coinDecimals: 18 }],
 };

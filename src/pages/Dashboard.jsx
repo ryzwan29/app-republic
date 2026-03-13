@@ -5,7 +5,7 @@ import { TokenIcon } from '../components/TokenSelector.jsx';
 import { Skeleton } from '../components/LoadingSpinner.jsx';
 import { getLatestBlock, getStakingPool, getDelegations, getRewards } from '../blockchain/cosmos.js';
 import { getUserLPBalance } from '../blockchain/amm.js';
-import { getTotalUserStaked } from '../blockchain/staking.js';
+import { getTotalUserStaked, getStakingAPR } from '../blockchain/staking.js';
 import { formatBalance } from '../blockchain/evm.js';
 import { POOL_PAIRS } from '../blockchain/tokens.js';
 import { fetchWithFallback } from '../blockchain/rpcFallback.js';
@@ -23,6 +23,7 @@ export default function Dashboard() {
   const [rewards, setRewards] = useState([]);
   const [validatorNames, setValidatorNames] = useState({});
   const [loadingExtra, setLoadingExtra] = useState(false);
+  const [apr, setApr] = useState('...');
 
   useEffect(() => {
     fetchChainData();
@@ -39,9 +40,10 @@ export default function Dashboard() {
 
   async function fetchChainData() {
     try {
-      const [block, pool] = await Promise.all([getLatestBlock(), getStakingPool()]);
+      const [block, pool, aprVal] = await Promise.all([getLatestBlock(), getStakingPool(), getStakingAPR()]);
       setChainInfo(block);
       setStakingPool(pool);
+      setApr(aprVal);
     } catch {}
   }
 
@@ -330,7 +332,7 @@ export default function Dashboard() {
         {[
           { label: 'Swap Tokens', href: '/swap', desc: 'Trade tokens instantly' },
           { label: 'Add Liquidity', href: '/liquidity', desc: 'Earn from trading fees' },
-          { label: 'Stake RAI', href: '/stake', desc: 'Earn ~12.5% APR' },
+          { label: 'Stake RAI', href: '/stake', desc: `Earn ${apr}% APR` },
         ].map(action => (
           <Link key={action.href} to={action.href}>
             <div className="glass-card p-5 text-center group hover:border-blue-500/40 transition-all cursor-pointer">

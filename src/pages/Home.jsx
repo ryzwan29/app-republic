@@ -2,80 +2,83 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useWallet } from '../App.jsx';
 import { getLatestBlock, getStakingPool } from '../blockchain/cosmos.js';
-import { getValidators } from '../blockchain/staking.js';
-
-const FEATURES = [
-  {
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
-        <path d="m8 12 4-4 4 4"/>
-        <path d="m16 12-4 4-4-4"/>
-      </svg>
-    ),
-    title: 'Token Swap',
-    desc: 'Trade RAI, USDT, USDC and WRAI with minimal slippage using our AMM.',
-    href: '/swap',
-    badge: '0.3% fee',
-  },
-  {
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <circle cx="12" cy="12" r="10"/>
-        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-        <path d="M2 12h20"/>
-      </svg>
-    ),
-    title: 'Liquidity Pools',
-    desc: 'Provide liquidity to earn 0.2% of every trade in your active pools.',
-    href: '/liquidity',
-    badge: 'Earn fees',
-  },
-  {
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-      </svg>
-    ),
-    title: 'Staking',
-    desc: 'Stake RAI to validators and earn ~12.5% APR rewards in RAI.',
-    href: '/stake',
-    badge: '~12.5% APR',
-  },
-  {
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-      </svg>
-    ),
-    title: 'Testnet Faucet',
-    desc: 'Claim free RAI, USDT, and USDC tokens to start testing the DEX.',
-    href: '/faucet',
-    badge: 'Free tokens',
-  },
-];
+import { getValidators, getStakingAPR } from '../blockchain/staking.js';
 
 export default function Home() {
   const { connectEVM, evmAddress } = useWallet();
   const [chainData, setChainData] = useState({ height: '—', validators: 0, bonded: '0' });
+  const [apr, setApr] = useState('...');
 
   useEffect(() => {
     async function fetchChainData() {
       try {
-        const [block, pool, validators] = await Promise.all([
+        const [block, pool, validators, aprVal] = await Promise.all([
           getLatestBlock(),
           getStakingPool(),
           getValidators(),
+          getStakingAPR(),
         ]);
         setChainData({
           height: parseInt(block.height).toLocaleString(),
           validators: validators.length,
           bonded: (parseFloat(pool.bondedTokens) / 1e18).toLocaleString(undefined, { maximumFractionDigits: 0 }),
         });
+        setApr(aprVal);
       } catch {}
     }
     fetchChainData();
   }, []);
+
+  const FEATURES = [
+    {
+      icon: (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+          <path d="m8 12 4-4 4 4"/>
+          <path d="m16 12-4 4-4-4"/>
+        </svg>
+      ),
+      title: 'Token Swap',
+      desc: 'Trade RAI, USDT, USDC and WRAI with minimal slippage using our AMM.',
+      href: '/swap',
+      badge: '0.3% fee',
+    },
+    {
+      icon: (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          <path d="M2 12h20"/>
+        </svg>
+      ),
+      title: 'Liquidity Pools',
+      desc: 'Provide liquidity to earn 0.2% of every trade in your active pools.',
+      href: '/liquidity',
+      badge: 'Earn fees',
+    },
+    {
+      icon: (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+      ),
+      title: 'Staking',
+      desc: `Stake RAI to validators and earn ${apr}% APR rewards in RAI.`,
+      href: '/stake',
+      badge: `${apr}% APR`,
+    },
+    {
+      icon: (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+        </svg>
+      ),
+      title: 'Testnet Faucet',
+      desc: 'Claim free RAI, USDT, and USDC tokens to start testing the DEX.',
+      href: '/faucet',
+      badge: 'Free tokens',
+    },
+  ];
 
   return (
     <div className="min-h-screen">

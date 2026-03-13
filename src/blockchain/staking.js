@@ -2,7 +2,7 @@ import { ethers } from 'ethers';
 import { SigningStargateClient, GasPrice } from '@cosmjs/stargate';
 import { getProvider, getWeb3Provider } from './evm.js';
 import { CONTRACTS, STAKING_ABI } from './tokens.js';
-import { getValidators as getCosmosValidators, getStakingPool } from './cosmos.js';
+import { getValidators as getCosmosValidators, getStakingPool, getAnnualProvisions, getInflation } from './cosmos.js';
 import { getActiveRPC, fetchWithFallback, withEVMFallback } from './rpcFallback.js';
 
 // ─── Chain config ─────────────────────────────────────────────────────────────
@@ -203,18 +203,38 @@ export async function getUserStakeInfo(userAddress, validatorAddress, walletType
 
 export async function getStakingAPR() {
   try {
-    const rpcProvider = getProvider();
-    const staking = getStakingContract(rpcProvider);
-    const apr = await staking.getAPR();
-    return (Number(apr) / 100).toFixed(2);
-  } catch {
-    try {
-      const pool = await getStakingPool();
-      const bonded = parseFloat(pool.bondedTokens) / 1e18;
-      if (bonded > 0) return '12.50';
-    } catch {}
-    return '12.50';
-  }
+    // Ambil annual_provisions + bonded_tokens dari Cosmos REST
+    // APR = annual_provisions / bonded_tokens * 100
+    // Ini APR gross sebelum dikurangi commission validator
+    const [pool, annualProvisions] = await Promise.all([
+      getStakingPool(),
+      getAnnualProvisions(),
+    ]);
+
+    const bonded = parseFloat(pool.bondedTokens);
+    const provisions = parseFloat(annualProvisions);
+
+    if (bonded > 0 && provisions > 0) {
+      const apr = (provisions / bonded) * 100;
+      return apr.toFixed(2);
+    }
+
+    // Fallback: hitung dari inflation rate kalau annual_provisions kosong
+    const inflation = await getInflation();
+    const inflationRate = parseFloat(inflation);
+    if (inflationRate > 0 && bonded > 0) {
+      // Perlu total supply untuk hitung dari inflation
+      // APR ≈ inflation_rate * (total_supply / bonded_tokens) * 100
+      const supplyData = await fetchWithFallback('/cosmos/bank/v1beta1/supply/by_denom?denom=arai');
+      const totalSupply = parseFloat(supplyData.amount?.amount || '0');
+      if (totalSupply > 0) {
+        const apr = inflationRate * (totalSupply / bonded) * 100;
+        return apr.toFixed(2);
+      }
+    }
+  } catch {}
+
+  return '0.00';
 }
 
 export async function getTotalUserStaked(userAddress) {
