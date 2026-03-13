@@ -179,10 +179,16 @@ export async function getPriceImpact(amountIn, fromSymbol, toSymbol) {
     const denominator = reserveIn * 1000n + amountInWithFee;
     const amountOutOptimal = numerator / denominator;
 
-    const priceWithoutImpact = (parseFloat(reserveOut.toString()) / parseFloat(reserveIn.toString())) * parseFloat(amountIn);
     // First hop output selalu dalam decimals token path[1]
     const hop1Token = Object.values(TOKENS).find(t => (t.isNative ? CONTRACTS.WRAI : t.address).toLowerCase() === path[1].toLowerCase());
     const hop1Decimals = hop1Token ? hop1Token.decimals : 18;
+
+    // Normalize reserves ke decimal units dulu sebelum dibagi
+    // (reserveIn/reserveOut masih raw BigInt — beda decimals antar token bikin kalkulasi meleset)
+    const reserveInFloat  = parseFloat(ethers.formatUnits(reserveIn,  fromToken.decimals));
+    const reserveOutFloat = parseFloat(ethers.formatUnits(reserveOut, hop1Decimals));
+
+    const priceWithoutImpact = (reserveOutFloat / reserveInFloat) * parseFloat(amountIn);
     const priceWithImpact = parseFloat(ethers.formatUnits(amountOutOptimal, hop1Decimals));
 
     if (priceWithoutImpact === 0) return 0;
