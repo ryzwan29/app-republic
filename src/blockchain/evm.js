@@ -1,45 +1,36 @@
 import { ethers } from 'ethers';
-import { NETWORK, ERC20_ABI, CONTRACTS, TOKENS } from './tokens.js';
-import { withEVMFallback, getActiveEVM } from './rpcFallback.js';
+import { NETWORK, ERC20_ABI, TOKENS } from './tokens.js';
 
 let provider = null;
-let _providerUrl = null;
 
-// ─── Provider dengan fallback otomatis ───────────────────────────────────────
-// Di browser, selalu lewat /rpc (server proxy) supaya tidak kena CORS.
-// Di Node/SSR, pakai withEVMFallback langsung ke RPC node.
+// ─── Semua RPC call dari browser HARUS lewat /rpc proxy ─────────────────────
+// Server yang handle fallback ke 3 provider — tidak ada direct hit ke RPC node
+// dari browser supaya tidak kena CORS.
+function getRpcUrl() {
+  return typeof window !== 'undefined'
+    ? `${window.location.origin}/rpc`
+    : 'https://evm-rpc.republicai.io';
+}
+
 export function getProvider() {
   if (!provider) {
-    // Browser: pakai /rpc proxy — server yang handle fallback ke 3 provider
-    const rpcUrl = typeof window !== 'undefined'
-      ? `${window.location.origin}/rpc`
-      : 'https://evm-rpc.republicai.io';
-
-    provider = new ethers.JsonRpcProvider(rpcUrl);
-    _providerUrl = rpcUrl;
+    provider = new ethers.JsonRpcProvider(getRpcUrl());
   }
   return provider;
 }
 
 export function resetProvider() {
   provider = null;
-  _providerUrl = null;
 }
 
-/** Buat provider fresh dengan fallback, untuk operasi yang butuh provider baru */
+/** Di browser selalu pakai /rpc, tidak perlu async lookup lagi */
 export async function getProviderWithFallback() {
-  const url = await getActiveEVM();
-  if (url !== _providerUrl) {
-    provider = new ethers.JsonRpcProvider(url);
-    _providerUrl = url;
-  }
-  return provider;
+  return getProvider();
 }
 
 export async function getWeb3Provider() {
   if (!window.ethereum) throw new Error('MetaMask not installed');
-  const web3Provider = new ethers.BrowserProvider(window.ethereum);
-  return web3Provider;
+  return new ethers.BrowserProvider(window.ethereum);
 }
 
 export async function getSigner() {
@@ -105,28 +96,26 @@ export async function switchToRepublicNetwork() {
 }
 
 export async function getEVMBalances(address) {
-  // Gunakan withEVMFallback agar balance fetch tidak gagal kalau satu provider down
-  return withEVMFallback(async (url) => {
-    const rpcProvider = new ethers.JsonRpcProvider(url);
-    const erc20Tokens = ['USDT', 'USDC', 'WRAI', 'WBTC', 'WETH'];
+  // Lewat /rpc proxy — server handle fallback, tidak ada CORS
+  const rpcProvider = getProvider();
+  const erc20Tokens = ['USDT', 'USDC', 'WRAI', 'WBTC', 'WETH'];
 
-    const [raiRaw, ...erc20Raws] = await Promise.all([
-      rpcProvider.getBalance(address).catch(() => null),
-      ...erc20Tokens.map(symbol => {
-        const token = TOKENS[symbol];
-        const contract = new ethers.Contract(token.address, ERC20_ABI, rpcProvider);
-        return contract.balanceOf(address).catch(() => null);
-      }),
-    ]);
+  const [raiRaw, ...erc20Raws] = await Promise.all([
+    rpcProvider.getBalance(address).catch(() => null),
+    ...erc20Tokens.map(symbol => {
+      const token = TOKENS[symbol];
+      const contract = new ethers.Contract(token.address, ERC20_ABI, rpcProvider);
+      return contract.balanceOf(address).catch(() => null);
+    }),
+  ]);
 
-    const balances = {};
-    balances.RAI = raiRaw ? ethers.formatEther(raiRaw) : '0';
-    erc20Tokens.forEach((symbol, i) => {
-      const raw = erc20Raws[i];
-      balances[symbol] = raw ? ethers.formatUnits(raw, TOKENS[symbol].decimals) : '0';
-    });
-    return balances;
+  const balances = {};
+  balances.RAI = raiRaw ? ethers.formatEther(raiRaw) : '0';
+  erc20Tokens.forEach((symbol, i) => {
+    const raw = erc20Raws[i];
+    balances[symbol] = raw ? ethers.formatUnits(raw, TOKENS[symbol].decimals) : '0';
   });
+  return balances;
 }
 
 export async function getTokenBalance(address, tokenSymbol) {

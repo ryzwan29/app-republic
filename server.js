@@ -127,7 +127,7 @@ app.get('/{*path}', (_, res) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`✓ Republic DEX server running on http://localhost:${PORT}`);
-  console.log(`  /rpc                       → ${RPC_TARGET}`);
+  console.log(`  /rpc                       → ${EVM_PROVIDERS.join(' → ')}`);
   console.log(`  /api/analyze               → api/analyze.js`);
   console.log(`  /api/verify-turnstile      → api/verify-turnstile.js`);
   console.log(`  /api/swap-volume/record    → api/swapVolumeDb.js`);
