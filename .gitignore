@@ -29,4 +29,9 @@ Thumbs.db
 
 # Cache
 .cache/
-.parcel-cache/
+.parcel-cache/db/
+
+# DB
+db/*.db
+db/*.db-shm
+db/*.db-wal
