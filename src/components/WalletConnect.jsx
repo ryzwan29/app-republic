@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useWallet } from '../App.jsx';
 import { formatAddress } from '../blockchain/evm.js';
 
@@ -6,13 +6,26 @@ export default function WalletConnect({ compact = false }) {
   const { evmAddress, cosmosAddress, connectEVM, connectCosmos, disconnect, balances } = useWallet();
   const [showDropdown,    setShowDropdown]    = useState(false);
   const [showConnectMenu, setShowConnectMenu] = useState(false);
+  const containerRef = useRef(null);
+
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setShowDropdown(false);
+        setShowConnectMenu(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const isAnyConnected = evmAddress || cosmosAddress;
 
   // ── Belum connect sama sekali → tampilkan menu pilih wallet ──────────────────
   if (!isAnyConnected) {
     return (
-      <div className="relative">
+      <div className="relative" ref={containerRef}>
         <button
           onClick={() => setShowConnectMenu(!showConnectMenu)}
           className="btn-primary text-sm px-4 py-2 flex items-center gap-2"
@@ -57,7 +70,7 @@ export default function WalletConnect({ compact = false }) {
   const displayAddr = evmAddress || cosmosAddress;
 
   return (
-    <div className="relative">
+    <div className="relative" ref={containerRef}>
       <button
         onClick={() => setShowDropdown(!showDropdown)}
         className="flex items-center gap-2 px-3 py-2 rounded-xl border border-blue-500/30 bg-blue-900/15 hover:bg-blue-900/25 hover:border-blue-500/50 transition-all duration-200"

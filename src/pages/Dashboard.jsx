@@ -52,13 +52,13 @@ export default function Dashboard() {
 
   // Check validator status when Keplr connects
   useEffect(() => {
-    if (walletType === 'keplr' && cosmosAddress) {
+    if (cosmosAddress) {
       checkValidatorStatus();
       fetchAllValidators();
     } else {
       setValidatorInfo(null);
     }
-  }, [cosmosAddress, walletType]);
+  }, [cosmosAddress]);
 
   async function fetchChainData() {
     try {
@@ -272,7 +272,7 @@ export default function Dashboard() {
       <div className="glass-card p-6 mb-6">
         <div className="flex items-center justify-between mb-5">
           <h2 className="font-display font-semibold text-white text-lg">Token Balances</h2>
-          <span className="badge-blue text-xs">{walletType === 'keplr' ? 'Cosmos' : 'EVM'}</span>
+          <span className="badge-blue text-xs">{evmAddress ? 'EVM' : 'Cosmos'}</span>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {Object.entries(balances).map(([sym, bal]) => (

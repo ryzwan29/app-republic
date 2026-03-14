@@ -16,6 +16,7 @@ import {
   withdrawValidatorCommission,
   withdrawAllRewardsAndCommission,
   getValidatorCommission,
+  getActiveRedelegations,
 } from '../blockchain/staking.js';
 import { formatBalance } from '../blockchain/evm.js';
 
@@ -23,6 +24,19 @@ import { formatBalance } from '../blockchain/evm.js';
 function fmt(amount, decimals = 4) {
   const n = parseFloat(amount || 0);
   return isNaN(n) ? '0' : n.toFixed(decimals);
+}
+
+// Format remaining time until a Date — e.g. "6d 14h 32m" or "Completed"
+function formatTimeRemaining(completionDate) {
+  const now  = new Date();
+  const diff = completionDate - now;
+  if (diff <= 0) return 'Completed';
+  const days    = Math.floor(diff / (1000 * 60 * 60 * 24));
+  const hours   = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+  if (days > 0)  return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
 }
 
 function highlightMatch(text, query) {
@@ -48,7 +62,7 @@ const IconStar = ({ color = '#eab308' }) => (
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function Stake() {
   const {
-    evmAddress, cosmosAddress, balances,
+    evmAddress, cosmosAddress, balances, cosmosRAI,
     connectEVM, connectKeplr,
     refreshBalances, addNotification,
   } = useWallet();
@@ -59,6 +73,9 @@ export default function Stake() {
   const activeAddress = cosmosAddress || evmAddress;
   const walletType    = cosmosAddress ? 'keplr' : evmAddress ? 'evm' : null;
   const isConnected   = !!activeAddress;
+  // Di Stake page, RAI balance dari Keplr (cosmosRAI) kalau connect,
+  // fallback ke EVM balance kalau hanya MetaMask
+  const stakeRAI = cosmosAddress ? cosmosRAI : balances.RAI;
 
   // ── Core data ──
   const [validators,  setValidators]  = useState([]);
@@ -90,6 +107,7 @@ export default function Stake() {
   const [validatorInfo,        setValidatorInfo]        = useState(null);
   const [loadingValidatorCheck, setLoadingValidatorCheck] = useState(false);
   const [commissionAmount,     setCommissionAmount]     = useState('0');
+  const [activeRedelegations, setActiveRedelegations] = useState({}); // { [dstValAddr]: Date }
 
   // ── Filtered lists ──
   const filteredValidators = useMemo(() => {
@@ -141,6 +159,12 @@ export default function Stake() {
   useEffect(() => {
     if (cosmosAddress) checkValidatorStatus(cosmosAddress);
     else setValidatorInfo(null);
+  }, [cosmosAddress]);
+
+  // Fetch active redelegations to show countdown timers
+  useEffect(() => {
+    if (!cosmosAddress) { setActiveRedelegations({}); return; }
+    getActiveRedelegations(cosmosAddress).then(setActiveRedelegations);
   }, [cosmosAddress]);
 
   // FIX: Terima cosAddr dan evmAddr sebagai parameter eksplisit
@@ -218,7 +242,7 @@ export default function Stake() {
     if (!isConnected) { handleConnect(); return; }
     if (!selectedValidator) { addNotification('Please select a validator', 'warning'); return; }
     if (!stakeAmount || parseFloat(stakeAmount) <= 0) { addNotification('Enter stake amount', 'warning'); return; }
-    if (parseFloat(stakeAmount) > parseFloat(balances.RAI || '0')) {
+    if (parseFloat(stakeAmount) > parseFloat(stakeRAI || '0')) {
       addNotification('Insufficient RAI balance', 'error'); return;
     }
 
@@ -269,16 +293,16 @@ export default function Stake() {
 
   async function handleClaimAll() {
     if (!isConnected || walletType !== 'keplr') {
-      addNotification('Claim All hanya tersedia untuk Keplr wallet', 'warning'); return;
+      addNotification('Claim All is only available with Keplr wallet', 'warning'); return;
     }
     if (!delegatedValAddresses.length) {
-      addNotification('Tidak ada rewards yang bisa di-claim', 'warning'); return;
+      addNotification('No rewards available to claim', 'warning'); return;
     }
 
     setTxPending(true);
     try {
       await claimAllRewards(delegatedValAddresses);
-      addNotification(`✅ All rewards claimed dari ${delegatedValAddresses.length} validator!`, 'success');
+      addNotification(`✅ All rewards claimed from ${delegatedValAddresses.length} validator(s)!`, 'success');
       await Promise.all([fetchData(cosmosAddress, evmAddress), refreshBalances()]);
     } catch (err) {
       const msg = err.message || 'Transaction failed';
@@ -297,14 +321,14 @@ export default function Stake() {
       : null;
 
     if (!allValAddrs.length && !operatorAddr) {
-      addNotification('Tidak ada yang bisa di-withdraw', 'warning'); return;
+      addNotification('Nothing to withdraw', 'warning'); return;
     }
 
     setTxPending(true);
     try {
       await withdrawAllRewardsAndCommission(allValAddrs, operatorAddr);
       const label = operatorAddr ? 'All rewards + commission' : 'All rewards';
-      addNotification(`✅ ${label} berhasil di-withdraw!`, 'success');
+      addNotification(`✅ ${label} withdrawn successfully!`, 'success');
       await Promise.all([fetchData(cosmosAddress, evmAddress), refreshCommission(), refreshBalances()]);
     } catch (err) {
       const msg = err.message || 'Transaction failed';
@@ -314,12 +338,12 @@ export default function Stake() {
 
   async function handleRedelegate() {
     if (!isConnected) { handleConnect(); return; }
-    if (!selectedValidator) { addNotification('Pilih validator sumber', 'warning'); return; }
-    if (!redelegateDst) { addNotification('Pilih validator tujuan', 'warning'); return; }
-    if (!redelegateAmount || parseFloat(redelegateAmount) <= 0) { addNotification('Masukkan jumlah', 'warning'); return; }
-    if (walletType !== 'keplr') { addNotification('Redelegate hanya tersedia untuk Keplr', 'warning'); return; }
+    if (!selectedValidator) { addNotification('Select source validator', 'warning'); return; }
+    if (!redelegateDst) { addNotification('Select destination validator', 'warning'); return; }
+    if (!redelegateAmount || parseFloat(redelegateAmount) <= 0) { addNotification('Enter amount', 'warning'); return; }
+    if (walletType !== 'keplr') { addNotification('Redelegate is only available with Keplr wallet', 'warning'); return; }
     if (parseFloat(redelegateAmount) > stakedOnSelected) {
-      addNotification('Amount melebihi staked amount', 'error'); return;
+      addNotification('Amount exceeds staked balance', 'error'); return;
     }
 
     setTxPending(true);
@@ -328,9 +352,19 @@ export default function Stake() {
       addNotification(`✅ Redelegated ${redelegateAmount} RAI → ${redelegateDst.moniker}`, 'success');
       setRedelegateAmount(''); setShowRedelegateModal(false); setRedelegateDst(null);
       await Promise.all([fetchData(cosmosAddress, evmAddress), refreshBalances()]);
+      // Refresh redelegation timers
+      getActiveRedelegations(cosmosAddress).then(setActiveRedelegations);
     } catch (err) {
       const msg = err.reason || err.message || 'Transaction failed';
-      addNotification(msg.includes('rejected') ? 'Transaction rejected.' : `Redelegate failed: ${msg}`, 'error');
+      let errMsg = `Redelegate failed: ${msg}`;
+      if (msg.includes('rejected')) {
+        errMsg = 'Transaction rejected.';
+      } else if (msg.includes('redelegation to this validator already in progress')) {
+        errMsg = '⏳ Redelegation to this validator is already in progress. Wait for the unbonding period (~21 days) to complete before redelegating to the same validator again.';
+      } else if (msg.includes('insufficient funds') || msg.includes('insufficient delegation')) {
+        errMsg = 'Amount exceeds staked balance.';
+      }
+      addNotification(errMsg, 'error');
     } finally { setTxPending(false); }
   }
 
@@ -405,28 +439,44 @@ export default function Stake() {
                 <input
                   type="text" value={redelegateSearch}
                   onChange={(e) => setRedelegateSearch(e.target.value)}
-                  placeholder="Search destination..."
+                  placeholder="Search destination validator..."
                   className="w-full pl-9 pr-3 py-2 rounded-xl bg-black/20 border border-blue-900/20 text-white text-sm placeholder:text-slate-600 focus:outline-none focus:border-blue-500/40"
                 />
               </div>
               <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
-                {filteredRedelegateDst.map((v) => (
-                  <button key={v.address} onClick={() => setRedelegateDst(v)}
-                    className={`w-full p-3 rounded-xl text-left transition-all text-sm ${
-                      redelegateDst?.address === v.address
-                        ? 'bg-purple-900/30 border border-purple-500/40'
-                        : 'bg-black/20 border border-blue-900/20 hover:border-blue-500/30'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-display font-semibold text-white">{v.moniker}</span>
-                      <span className="text-xs text-slate-500 font-mono">{v.commission.toFixed(1)}% fee</span>
-                    </div>
-                    <div className="text-xs text-slate-500 mt-0.5">
-                      VP: {parseFloat(v.votingPower).toLocaleString()} RAI
-                    </div>
-                  </button>
-                ))}
+                {filteredRedelegateDst.map((v) => {
+                  const redelegationCompletion = activeRedelegations[v.address];
+                  const isLocked = redelegationCompletion && redelegationCompletion > new Date();
+                  const timeLeft = isLocked ? formatTimeRemaining(redelegationCompletion) : null;
+                  return (
+                    <button key={v.address}
+                      onClick={() => !isLocked && setRedelegateDst(v)}
+                      disabled={isLocked}
+                      className={`w-full p-3 rounded-xl text-left transition-all text-sm ${
+                        isLocked
+                          ? 'bg-black/10 border border-red-900/30 opacity-60 cursor-not-allowed'
+                          : redelegateDst?.address === v.address
+                            ? 'bg-purple-900/30 border border-purple-500/40'
+                            : 'bg-black/20 border border-blue-900/20 hover:border-blue-500/30'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-display font-semibold text-white">{v.moniker}</span>
+                        {isLocked ? (
+                          <span className="text-xs text-red-400 font-mono">🔒 {timeLeft}</span>
+                        ) : (
+                          <span className="text-xs text-slate-500 font-mono">{v.commission.toFixed(1)}% fee</span>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        {isLocked
+                          ? 'Redelegation in progress — locked until completion'
+                          : `VP: ${parseFloat(v.votingPower).toLocaleString()} RAI`
+                        }
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -533,7 +583,7 @@ export default function Stake() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
         {[
           { label: 'Staking APR',      value: `${apr}%`,                               color: 'text-green-400' },
-          { label: 'RAI Balance',      value: `${formatBalance(balances.RAI)} RAI`,     color: 'text-white' },
+          { label: 'RAI Balance',      value: `${formatBalance(stakeRAI)} RAI`,     color: 'text-white' },
           { label: 'My Staked',        value: `${formatBalance(totalStaked.toString())} RAI`, color: 'text-blue-400' },
           { label: 'Pending Rewards',  value: `${fmt(totalPendingRewards.toString())} RAI`, color: 'text-amber-400' },
         ].map((stat) => (
@@ -571,12 +621,18 @@ export default function Stake() {
                 <div key={v.address}
                   className="flex items-center justify-between p-3 rounded-xl bg-black/20 border border-blue-900/20"
                 >
-                  <div className="min-w-0 mr-4">
-                    <div className="font-display font-semibold text-white text-sm truncate">{v.moniker}</div>
+                  <button
+                    className="min-w-0 mr-4 text-left"
+                    onClick={() => {
+                      setSelectedValidator(v);
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                  >
+                    <div className="font-display font-semibold text-white text-sm truncate hover:text-blue-300 transition-colors">{v.moniker}</div>
                     <div className="text-xs text-slate-500 font-mono mt-0.5">
                       {fmt(info.stakedAmount)} RAI staked
                     </div>
-                  </div>
+                  </button>
 
                   <div className="flex items-center gap-2 shrink-0">
                     {reward > 0 && (
@@ -761,8 +817,8 @@ export default function Stake() {
               <div>
                 <div className="flex justify-between mb-1.5 text-xs text-slate-500">
                   <span>Stake Amount (RAI)</span>
-                  <button onClick={() => setStakeAmount(balances.RAI || '0')} className="text-blue-400 hover:text-blue-300">
-                    MAX: {formatBalance(balances.RAI)}
+                  <button onClick={() => setStakeAmount(stakeRAI || '0')} className="text-blue-400 hover:text-blue-300">
+                    MAX: {formatBalance(stakeRAI)}
                   </button>
                 </div>
                 <div className="input-container p-3 mb-4 flex items-center gap-2">
@@ -815,7 +871,7 @@ export default function Stake() {
                 </div>
                 {walletType === 'keplr' && (
                   <p className="text-xs text-slate-600 mb-4">
-                    ⏳ Unstaked tokens akan tersedia setelah unbonding period (~21 hari)
+                    ⏳ Unstaked tokens will be available after the unbonding period (~21 days)
                   </p>
                 )}
                 <button

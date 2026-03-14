@@ -483,3 +483,58 @@ export async function getValidatorCommission(operatorAddress) {
     return '0';
   }
 }
+
+// ─── Get active redelegations for a delegator ────────────────────────────────
+// Returns list of active redelegations with completion_time for each entry.
+// Used to show countdown timers in the UI before user can redelegate again.
+//
+// Cosmos API: GET /cosmos/staking/v1beta1/delegators/{delegatorAddr}/redelegations
+// Response shape:
+//   { redelegation_responses: [{ redelegation: { validator_dst_address }, entries: [{ redelegation_entry: { completion_time } }] }] }
+//
+// Returns: { [validatorDstAddress]: Date } — earliest completion time per destination validator
+export async function getActiveRedelegations(cosmosAddress) {
+  if (!cosmosAddress) return {};
+  try {
+    const data = await fetchWithFallback(
+      `/cosmos/staking/v1beta1/delegators/${cosmosAddress}/redelegations`
+    );
+
+    // Log raw response so we can debug the actual shape
+    console.log('[getActiveRedelegations] raw response:', JSON.stringify(data));
+
+    const responses = data?.redelegation_responses ?? [];
+    const result = {};
+
+    for (const r of responses) {
+      // Support two known response shapes:
+      // Shape A (standard): r.redelegation.validator_dst_address + r.entries[].redelegation_entry.completion_time
+      // Shape B (some chains): r.validator_dst_address + r.entries[].completion_time
+      const dst = r.redelegation?.validator_dst_address ?? r.validator_dst_address;
+      if (!dst) continue;
+
+      const entries = r.entries ?? r.redelegation?.entries ?? [];
+      for (const entry of entries) {
+        // Try all known locations for completion_time
+        const completionTime =
+          entry.redelegation_entry?.completion_time ??
+          entry.completion_time ??
+          entry.redelegation_entry?.completionTime ??
+          entry.completionTime;
+
+        if (!completionTime) continue;
+        const completionDate = new Date(completionTime);
+        if (isNaN(completionDate.getTime())) continue; // skip invalid dates
+        if (!result[dst] || completionDate > result[dst]) {
+          result[dst] = completionDate;
+        }
+      }
+    }
+
+    console.log('[getActiveRedelegations] parsed result:', result);
+    return result;
+  } catch (err) {
+    console.error('[getActiveRedelegations] error:', err);
+    return {};
+  }
+}

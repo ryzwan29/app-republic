@@ -30,7 +30,8 @@ function PageWrapper({ children }) {
 function AppContent() {
   const [evmAddress,    setEvmAddress]    = useState(null);
   const [cosmosAddress, setCosmosAddress] = useState(null);
-  const [balances, setBalances] = useState({ RAI: '0', USDT: '0', USDC: '0', WRAI: '0', WBTC: '0', WETH: '0' });
+  const [balances,    setBalances]    = useState({ RAI: '0', USDT: '0', USDC: '0', WRAI: '0', WBTC: '0', WETH: '0' });
+  const [cosmosRAI,   setCosmosRAI]   = useState('0'); // RAI dari Keplr — hanya dipakai di Stake page
   const [notifications,   setNotifications]  = useState([]);
   const [isWrongNetwork,  setIsWrongNetwork]  = useState(false);
   const [loadingBalances, setLoadingBalances] = useState(false);
@@ -53,16 +54,24 @@ function AppContent() {
       const bal = await getEVMBalances(address);
       setBalances(prev => ({ ...prev, ...bal }));
     } catch (err) {
-      console.warn('EVM balance error:', err.message);
+      console.error('[fetchEVMBalances] Failed:', err.message);
+      addNotification('Failed to fetch token balances. Check your network connection.', 'error');
     }
-  }, []);
+  }, [addNotification]);
 
-  // fetchCosmosBalances: fetch RAI cosmos, tidak overwrite token EVM
+  // fetchCosmosBalances: simpan ke cosmosRAI (untuk Stake page).
+  // Kalau tidak ada evmAddress, juga isi balances.RAI supaya Dashboard/Swap bisa baca.
+  // Kalau evmAddress ada, balances.RAI tetap dari EVM — tidak ditimpa.
   const fetchCosmosBalances = useCallback(async (address) => {
     if (!address) return;
     try {
       const rai = await getCosmosBalance(address);
-      setBalances(prev => ({ ...prev, RAI: rai }));
+      setCosmosRAI(rai);
+      // Hanya update balances.RAI kalau MetaMask belum connect
+      setEvmAddress(currentEvm => {
+        if (!currentEvm) setBalances(prev => ({ ...prev, RAI: rai }));
+        return currentEvm;
+      });
     } catch (err) {
       console.warn('Cosmos balance error:', err.message);
     }
@@ -122,6 +131,7 @@ function AppContent() {
     setEvmAddress(null);
     setCosmosAddress(null);
     setBalances({ RAI: '0', USDT: '0', USDC: '0', WRAI: '0', WBTC: '0', WETH: '0' });
+    setCosmosRAI('0');
     addNotification('Wallet disconnected.', 'info');
   }, [addNotification]);
 
@@ -150,7 +160,8 @@ function AppContent() {
     cosmosAddress,
     // walletType: untuk backward compat. Keplr prioritas di Stake page.
     walletType: cosmosAddress ? 'keplr' : evmAddress ? 'evm' : null,
-    balances,
+    balances,       // RAI di sini selalu dari EVM — untuk Swap/Liquidity/Dashboard
+    cosmosRAI,      // RAI dari Keplr — khusus Stake page
     isWrongNetwork,
     loadingBalances,
     connectEVM,
