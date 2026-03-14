@@ -28,7 +28,9 @@ export async function connectKeplr() {
         bech32PrefixConsPub: `${COSMOS_CONFIG.bech32Prefix}valconspub`,
       },
       currencies: COSMOS_CONFIG.currencies,
-      feeCurrencies: [{ coinDenom: 'RAI', coinMinimalDenom: 'arai', coinDecimals: 18, gasPriceStep: { low: 0.01, average: 0.025, high: 0.04 } }],
+      // gasPriceStep dalam satuan awei (base denom, 18 desimal) — bukan RAI
+      // 10 Gwei = 10_000_000_000 awei; 20 Gwei = 20_000_000_000; 40 Gwei = 40_000_000_000
+      feeCurrencies: [{ coinDenom: 'RAI', coinMinimalDenom: 'arai', coinDecimals: 18, gasPriceStep: { low: 10_000_000_000, average: 20_000_000_000, high: 40_000_000_000 } }],
       stakeCurrency: { coinDenom: 'RAI', coinMinimalDenom: 'arai', coinDecimals: 18 },
       // ✅ Wajib untuk EVM-Cosmos chain
       features: ['eth-address-gen', 'eth-key-sign'],
