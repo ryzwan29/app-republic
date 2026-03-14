@@ -1,10 +1,14 @@
 import { ethers } from 'ethers';
-import { SigningStargateClient, GasPrice } from '@cosmjs/stargate';
-import { fromBech32, toBech32 } from '@cosmjs/encoding';
+import { SigningStargateClient, GasPrice, defaultRegistryTypes } from '@cosmjs/stargate';
+import { fromBech32, toBech32, fromBase64, toBase64 } from '@cosmjs/encoding';
+import { makeAuthInfoBytes, Registry, TxRaw, TxBody } from '@cosmjs/proto-signing';
 import { getProvider, getWeb3Provider } from './evm.js';
 import { CONTRACTS, STAKING_ABI } from './tokens.js';
 import { getValidators as getCosmosValidators, getStakingPool, getAnnualProvisions, getInflation } from './cosmos.js';
 import { getActiveRPC, getActiveAPI, fetchWithFallback, withEVMFallback } from './rpcFallback.js';
+
+// Registry singleton — dibuat sekali, dipakai semua fungsi
+const _registry = new Registry(defaultRegistryTypes);
 
 // ─── Chain config ─────────────────────────────────────────────────────────────
 const CHAIN_ID       = 'raitestnet_77701-1';
@@ -18,9 +22,11 @@ const REST_FALLBACK  = 'https://rest.republicai.io';
 // ─── Dynamic fee helper ───────────────────────────────────────────────────────
 // gasMultiplier > 1 untuk batch tx (claim all, withdraw all, dll)
 function makeFee(gasMultiplier = 1) {
-  const gas    = Math.ceil(300_000 * gasMultiplier);
-  // gas price: 20 Gwei = 20_000_000_000
-  const feeAmt = Math.ceil(20_000_000_000 * gas).toString();
+  const gas = Math.ceil(300_000 * gasMultiplier);
+  // ✅ FIX: Gunakan BigInt untuk hindari floating point imprecision
+  // 20_000_000_000 * 300_000 = 6_000_000_000_000_000 (15 digit, butuh presisi penuh)
+  const GAS_PRICE = 20_000_000_000n; // 20 Gwei dalam arai
+  const feeAmt = (GAS_PRICE * BigInt(gas)).toString();
   return {
     amount: [{ denom: DENOM, amount: feeAmt }],
     gas: gas.toString(),
@@ -57,23 +63,18 @@ function buildKeplrChainConfig(rpc, rest) {
   };
 }
 
-// ─── Keplr CosmJS signing client ─────────────────────────────────────────────
+// ─── Keplr signing client — proven approach untuk EVM-Cosmos chain ──────────────
 //
-// ROOT CAUSE error "unable to resolve type URL /ethermint.crypto.v1.ethsecp256k1.PubKey":
-//
-// getOfflineSigner()         → DIRECT/Protobuf signing
-//   AuthInfo embed pubkey sebagai: google.protobuf.Any { typeUrl: "/ethermint.crypto...." }
-//   CosmJS registry default tidak kenal typeUrl ini → ERROR ❌
-//
-// getOfflineSignerOnlyAmino() → AMINO/Legacy signing
-//   Pubkey dikirim sebagai raw bytes, TIDAK di-wrap ke Any{}
-//   typeUrl tidak pernah di-lookup → error hilang ✅
+// Approach ini diambil dari implementasi yang sudah terbukti bekerja:
+//   - getOfflineSigner() → signDirect (bukan AMINO) — ini yang benar untuk chain ini
+//   - fixedSigner: override algo ke "ethsecp256k1" dan pubKey dari keplr.getKey()
+//   - SigningStargateClient.connectWithSigner() lalu signAndBroadcast()
+//   - Fetch sequence FRESH dari REST sebelum sign untuk hindari sequence mismatch
 //
 export async function getKeplrSigningClient() {
   const keplr = window.keplr;
   if (!keplr) throw new Error('Keplr wallet not found. Please install the Keplr extension.');
 
-  // Resolve endpoint aktif saat runtime — fallback otomatis kalau provider utama down
   const [activeRpc, activeRest] = await Promise.all([
     getActiveRPC().catch(() => RPC_FALLBACK),
     getActiveAPI().catch(() => REST_FALLBACK),
@@ -81,37 +82,86 @@ export async function getKeplrSigningClient() {
 
   try {
     await keplr.experimentalSuggestChain(buildKeplrChainConfig(activeRpc, activeRest));
-  } catch { /* chain sudah ada di Keplr, lanjut */ }
+  } catch {}
 
   await keplr.enable(CHAIN_ID);
 
-  // ✅ FIX 1: getOfflineSignerOnlyAmino — AMINO mode, bukan DIRECT
-  const offlineSigner = keplr.getOfflineSignerOnlyAmino(CHAIN_ID);
-  const accounts      = await offlineSigner.getAccounts();
-  if (!accounts.length) throw new Error('No accounts found in Keplr.');
+  const key           = await keplr.getKey(CHAIN_ID);
+  const offlineSigner = keplr.getOfflineSigner(CHAIN_ID);
 
-  // ✅ FIX 2: Safety net kalau Keplr return algo yang tidak expected
-  const key = await keplr.getKey(CHAIN_ID);
-  let signer = offlineSigner;
-  if (accounts[0]?.algo !== 'ethsecp256k1') {
-    signer = {
-      getAccounts: async () => [{
-        address:  accounts[0].address,
-        algo:     'ethsecp256k1',
-        pubkey:   key.pubKey,
-      }],
-      signAmino: (signerAddr, signDoc) =>
-        keplr.signAmino(CHAIN_ID, signerAddr, signDoc),
-    };
+  // Fetch sequence FRESH dari chain sebelum membuat client
+  // Ini fix sequence mismatch — Keplr cache bisa stale setelah tx sebelumnya
+  let freshSequence      = null;
+  let freshAccountNumber = null;
+  try {
+    const acctRes = await fetch(`${activeRest}/cosmos/auth/v1beta1/accounts/${key.bech32Address}`);
+    if (acctRes.ok) {
+      const acctData    = await acctRes.json();
+      const baseAccount = acctData.account?.base_account ?? acctData.account;
+      freshSequence      = parseInt(baseAccount?.sequence       ?? '0', 10);
+      freshAccountNumber = parseInt(baseAccount?.account_number ?? '0', 10);
+    }
+  } catch (e) {
+    console.warn('[Keplr] Could not fetch on-chain sequence:', e.message);
   }
 
-  const client = await SigningStargateClient.connectWithSigner(
-    activeRpc,
-    signer,
-    { gasPrice: GasPrice.fromString(`20000000000${DENOM}`) }
-  );
+  // fixedSigner: override algo ke ethsecp256k1 + inject sequence fresh ke signDoc
+  const fixedSigner = {
+    getAccounts: async () => [{
+      address: key.bech32Address,
+      algo:    'ethsecp256k1',
+      pubkey:  key.pubKey,
+    }],
+    signDirect: async (signerAddress, signDoc) => {
+      // Patch sequence di AuthInfo jika kita punya nilai fresh dari chain
+      if (freshSequence !== null) {
+        try {
+          // AuthInfo bytes berisi sequence — kita patch via decoded protobuf
+          const { AuthInfo } = await import('@cosmjs/proto-signing');
+          const authInfo = AuthInfo.decode(signDoc.authInfoBytes);
+          if (authInfo.signerInfos?.[0]) {
+            authInfo.signerInfos[0].sequence = BigInt(freshSequence);
+            signDoc = {
+              ...signDoc,
+              authInfoBytes: AuthInfo.encode(authInfo).finish(),
+            };
+          }
+        } catch (e) {
+          console.warn('[Keplr] Could not patch sequence in AuthInfo:', e.message);
+        }
+      }
+      return offlineSigner.signDirect(signerAddress, signDoc);
+    },
+  };
 
-  return { client, address: accounts[0].address };
+  const client = await SigningStargateClient.connectWithSigner(activeRpc, fixedSigner, {
+    gasPrice: GasPrice.fromString(`20000000000${DENOM}`),
+  });
+
+  return { client, address: key.bech32Address };
+}
+
+// ─── keplrSignAndBroadcast — wrapper convenience ──────────────────────────────
+export async function keplrSignAndBroadcast(msgs, memo = '') {
+  const { client, address } = await getKeplrSigningClient();
+  // Resolve __SELF__ placeholder
+  const resolvedMsgs = msgs.map(({ typeUrl, value }) => ({
+    typeUrl,
+    value: Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, v === '__SELF__' ? address : v])
+    ),
+  }));
+  const gasLimit  = Math.ceil(300_000 * Math.min(1 + (resolvedMsgs.length - 1) * 0.35, 3.5));
+  const feeAmount = (20_000_000_000n * BigInt(gasLimit)).toString();
+  const fee = { amount: [{ denom: DENOM, amount: feeAmount }], gas: gasLimit.toString() };
+  let result;
+  try {
+    result = await client.signAndBroadcast(address, resolvedMsgs, fee, memo);
+  } finally {
+    try { client.disconnect(); } catch {}
+  }
+  if (result.code !== 0) throw new Error(result.rawLog || 'Transaction failed');
+  return { transactionHash: result.transactionHash, code: 0 };
 }
 
 // ─── EVM staking contract ─────────────────────────────────────────────────────
@@ -279,15 +329,11 @@ export async function getTotalUserStaked(userAddress) {
 // ─── Stake ────────────────────────────────────────────────────────────────────
 export async function stake(validatorAddress, amount, walletType = 'evm') {
   if (walletType === 'keplr') {
-    const { client, address } = await getKeplrSigningClient();
-    const amountInArai = (parseFloat(amount) * 10 ** DENOM_EXP).toFixed(0);
-    const result = await client.delegateTokens(
-      address, validatorAddress,
-      { denom: DENOM, amount: amountInArai },
-      makeFee()
-    );
-    if (result.code !== 0) throw new Error(result.rawLog || 'Delegate failed');
-    return result;
+    const amountInArai = ethers.parseEther(amount.toString()).toString();
+    return keplrSignAndBroadcast([{
+      typeUrl: '/cosmos.staking.v1beta1.MsgDelegate',
+      value:   { delegatorAddress: '__SELF__', validatorAddress, amount: { denom: DENOM, amount: amountInArai } },
+    }], `Delegate to validator`);
   }
   const web3Provider = await getWeb3Provider();
   const signer       = await web3Provider.getSigner();
@@ -299,15 +345,11 @@ export async function stake(validatorAddress, amount, walletType = 'evm') {
 // ─── Unstake ──────────────────────────────────────────────────────────────────
 export async function unstake(validatorAddress, amount, walletType = 'evm') {
   if (walletType === 'keplr') {
-    const { client, address } = await getKeplrSigningClient();
-    const amountInArai = (parseFloat(amount) * 10 ** DENOM_EXP).toFixed(0);
-    const result = await client.undelegateTokens(
-      address, validatorAddress,
-      { denom: DENOM, amount: amountInArai },
-      makeFee()
-    );
-    if (result.code !== 0) throw new Error(result.rawLog || 'Undelegate failed');
-    return result;
+    const amountInArai = ethers.parseEther(amount.toString()).toString();
+    return keplrSignAndBroadcast([{
+      typeUrl: '/cosmos.staking.v1beta1.MsgUndelegate',
+      value:   { delegatorAddress: '__SELF__', validatorAddress, amount: { denom: DENOM, amount: amountInArai } },
+    }], `Undelegate from validator`);
   }
   const web3Provider = await getWeb3Provider();
   const signer       = await web3Provider.getSigner();
@@ -319,10 +361,10 @@ export async function unstake(validatorAddress, amount, walletType = 'evm') {
 // ─── Claim reward (single validator) ─────────────────────────────────────────
 export async function claimReward(validatorAddress, walletType = 'evm') {
   if (walletType === 'keplr') {
-    const { client, address } = await getKeplrSigningClient();
-    const result = await client.withdrawRewards(address, validatorAddress, makeFee());
-    if (result.code !== 0) throw new Error(result.rawLog || 'Withdraw rewards failed');
-    return result;
+    return keplrSignAndBroadcast([{
+      typeUrl: '/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward',
+      value:   { delegatorAddress: '__SELF__', validatorAddress },
+    }], 'Withdraw rewards');
   }
   const web3Provider = await getWeb3Provider();
   const signer       = await web3Provider.getSigner();
@@ -332,44 +374,23 @@ export async function claimReward(validatorAddress, walletType = 'evm') {
 }
 
 // ─── Claim ALL rewards (semua validator sekaligus) ────────────────────────────
-// validatorAddresses: string[] — daftar valoper address yang user delegasi
 export async function claimAllRewards(validatorAddresses) {
   if (!validatorAddresses?.length) throw new Error('No delegations found to claim.');
-
-  const { client, address } = await getKeplrSigningClient();
-
   const msgs = validatorAddresses.map((valAddr) => ({
     typeUrl: '/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward',
-    value: { delegatorAddress: address, validatorAddress: valAddr },
+    value:   { delegatorAddress: '__SELF__', validatorAddress: valAddr },
   }));
-
-  // Scale gas untuk batch: base 300k + 100k per validator extra
-  const gasMultiplier = Math.min(1 + (msgs.length - 1) * 0.35, 3);
-  const result = await client.signAndBroadcast(address, msgs, makeFee(gasMultiplier));
-  if (result.code !== 0) throw new Error(result.rawLog || 'Claim all rewards failed');
-  return result;
+  return keplrSignAndBroadcast(msgs, 'Withdraw all rewards');
 }
 
 // ─── Redelegate ───────────────────────────────────────────────────────────────
 export async function redelegate(srcValidatorAddress, dstValidatorAddress, amount, walletType = 'evm') {
   if (walletType !== 'keplr') throw new Error('Redelegate hanya tersedia untuk Keplr wallet.');
-
-  const { client, address } = await getKeplrSigningClient();
-  const amountInArai = (parseFloat(amount) * 10 ** DENOM_EXP).toFixed(0);
-
-  const msg = {
+  const amountInArai = ethers.parseEther(amount.toString()).toString();
+  return keplrSignAndBroadcast([{
     typeUrl: '/cosmos.staking.v1beta1.MsgBeginRedelegate',
-    value: {
-      delegatorAddress:    address,
-      validatorSrcAddress: srcValidatorAddress,
-      validatorDstAddress: dstValidatorAddress,
-      amount: { denom: DENOM, amount: amountInArai },
-    },
-  };
-
-  const result = await client.signAndBroadcast(address, [msg], makeFee(1.2));
-  if (result.code !== 0) throw new Error(result.rawLog || 'Redelegate failed');
-  return result;
+    value:   { delegatorAddress: '__SELF__', validatorSrcAddress: srcValidatorAddress, validatorDstAddress: dstValidatorAddress, amount: { denom: DENOM, amount: amountInArai } },
+  }], 'Redelegate');
 }
 
 // ─── Cek apakah wallet adalah operator validator ──────────────────────────────
@@ -403,9 +424,9 @@ export async function getValidatorInfoByDelegator(cosmosAddress) {
     ).catch(() => null);
 
     const raiCommission = commissionData?.commission?.commission?.find((c) => c.denom === DENOM);
-    const pendingCommission = raiCommission
-      ? (parseFloat(raiCommission.amount) / 10 ** DENOM_EXP).toFixed(6)
-      : '0';
+    // FIX: Guard nilai '0.000000000000000000' dari API — parseFloat bukan string
+    const rawCommission = raiCommission ? parseFloat(raiCommission.amount) / 10 ** DENOM_EXP : 0;
+    const pendingCommission = rawCommission > 0 ? rawCommission.toFixed(6) : '0';
 
     return {
       isValidator: true,
@@ -424,39 +445,26 @@ export async function getValidatorInfoByDelegator(cosmosAddress) {
 
 // ─── Withdraw validator commission ────────────────────────────────────────────
 export async function withdrawValidatorCommission(validatorOperatorAddress) {
-  const { client, address } = await getKeplrSigningClient();
-  const msg = {
+  return keplrSignAndBroadcast([{
     typeUrl: '/cosmos.distribution.v1beta1.MsgWithdrawValidatorCommission',
-    value: { validatorAddress: validatorOperatorAddress },
-  };
-  const result = await client.signAndBroadcast(address, [msg], makeFee());
-  if (result.code !== 0) throw new Error(result.rawLog || 'Withdraw commission failed');
-  return result;
+    value:   { validatorAddress: validatorOperatorAddress },
+  }], 'Withdraw commission');
 }
 
 // ─── Withdraw ALL rewards + commission dalam 1 tx ────────────────────────────
-// operatorAddress: opsional — hanya diisi jika wallet adalah validator
 export async function withdrawAllRewardsAndCommission(validatorAddresses, operatorAddress) {
-  const { client, address } = await getKeplrSigningClient();
-
-  const msgs = validatorAddresses.map((valAddr) => ({
+  const msgs = (validatorAddresses || []).map((valAddr) => ({
     typeUrl: '/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward',
-    value: { delegatorAddress: address, validatorAddress: valAddr },
+    value:   { delegatorAddress: '__SELF__', validatorAddress: valAddr },
   }));
-
   if (operatorAddress) {
     msgs.push({
       typeUrl: '/cosmos.distribution.v1beta1.MsgWithdrawValidatorCommission',
-      value: { validatorAddress: operatorAddress },
+      value:   { validatorAddress: operatorAddress },
     });
   }
-
   if (!msgs.length) throw new Error('Nothing to withdraw.');
-
-  const gasMultiplier = Math.min(1 + (msgs.length - 1) * 0.35, 3.5);
-  const result = await client.signAndBroadcast(address, msgs, makeFee(gasMultiplier));
-  if (result.code !== 0) throw new Error(result.rawLog || 'Withdraw all failed');
-  return result;
+  return keplrSignAndBroadcast(msgs, 'Withdraw all rewards and commission');
 }
 
 // ─── Get pending validator commission ─────────────────────────────────────────
@@ -466,9 +474,11 @@ export async function getValidatorCommission(operatorAddress) {
       `/cosmos/distribution/v1beta1/validators/${operatorAddress}/commission`
     );
     const raiCommission = data?.commission?.commission?.find((c) => c.denom === DENOM);
-    return raiCommission
-      ? (parseFloat(raiCommission.amount) / 10 ** DENOM_EXP).toFixed(6)
-      : '0';
+    if (!raiCommission) return '0';
+    // ✅ FIX: Gunakan parseFloat, bukan string comparison
+    // API bisa return "0.000000000000000000" yang !== "0" padahal nilainya nol
+    const parsed = parseFloat(raiCommission.amount) / 10 ** DENOM_EXP;
+    return parsed > 0 ? parsed.toFixed(6) : '0';
   } catch {
     return '0';
   }

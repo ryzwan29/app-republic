@@ -11,10 +11,8 @@ import Faucet from './pages/Faucet.jsx';
 import AnalyzeContract from './pages/AnalyzeContract.jsx';
 import {
   connectMetaMask,
-  getCurrentAccount,
   setupAccountChangeListener,
   setupNetworkChangeListener,
-  isConnected,
   getEVMBalances,
 } from './blockchain/evm.js';
 import { connectKeplr, getCosmosBalance } from './blockchain/cosmos.js';
@@ -22,35 +20,25 @@ import { NETWORK } from './blockchain/tokens.js';
 import { prefetchValidators } from './blockchain/staking.js';
 
 export const WalletContext = createContext(null);
-
-export function useWallet() {
-  return useContext(WalletContext);
-}
+export function useWallet() { return useContext(WalletContext); }
 
 function PageWrapper({ children }) {
   const location = useLocation();
-  return (
-    <div key={location.pathname} className="animate-slide-up">
-      {children}
-    </div>
-  );
+  return <div key={location.pathname} className="animate-slide-up">{children}</div>;
 }
 
 function AppContent() {
-  const [evmAddress, setEvmAddress] = useState(null);
+  const [evmAddress,    setEvmAddress]    = useState(null);
   const [cosmosAddress, setCosmosAddress] = useState(null);
-  const [balances, setBalances] = useState({ RAI: '0', USDT: '0', USDC: '0', WRAI: '0' });
-  const [walletType, setWalletType] = useState(null);
-  const [notifications, setNotifications] = useState([]);
-  const [isWrongNetwork, setIsWrongNetwork] = useState(false);
+  const [balances, setBalances] = useState({ RAI: '0', USDT: '0', USDC: '0', WRAI: '0', WBTC: '0', WETH: '0' });
+  const [notifications,   setNotifications]  = useState([]);
+  const [isWrongNetwork,  setIsWrongNetwork]  = useState(false);
   const [loadingBalances, setLoadingBalances] = useState(false);
 
   const addNotification = useCallback((message, type = 'info', duration = 5000) => {
     const id = Date.now() + Math.random();
     setNotifications(prev => [...prev, { id, message, type }]);
-    if (duration > 0) {
-      setTimeout(() => removeNotification(id), duration);
-    }
+    if (duration > 0) setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), duration);
     return id;
   }, []);
 
@@ -58,96 +46,118 @@ function AppContent() {
     setNotifications(prev => prev.filter(n => n.id !== id));
   }, []);
 
-  const refreshBalances = useCallback(async (address, type) => {
+  // fetchEVMBalances: selalu terima address eksplisit — tidak bergantung state/closure
+  const fetchEVMBalances = useCallback(async (address) => {
     if (!address) return;
+    try {
+      const bal = await getEVMBalances(address);
+      setBalances(prev => ({ ...prev, ...bal }));
+    } catch (err) {
+      console.warn('EVM balance error:', err.message);
+    }
+  }, []);
+
+  // fetchCosmosBalances: fetch RAI cosmos, tidak overwrite token EVM
+  const fetchCosmosBalances = useCallback(async (address) => {
+    if (!address) return;
+    try {
+      const rai = await getCosmosBalance(address);
+      setBalances(prev => ({ ...prev, RAI: rai }));
+    } catch (err) {
+      console.warn('Cosmos balance error:', err.message);
+    }
+  }, []);
+
+  // refreshBalances: dipanggil tanpa argumen dari Swap/Liquidity setelah transaksi.
+  // Pakai parameter agar tidak kena stale closure — caller bisa pass address,
+  // atau kita gunakan nilai dari state langsung via setter pattern.
+  const refreshBalances = useCallback(async (evmAddr, cosmosAddr) => {
     setLoadingBalances(true);
     try {
-      const wType = type || walletType;
-      if (wType === 'keplr') {
-        // Only fetch cosmos balance, don't overwrite EVM balances
-        const raiBalance = await getCosmosBalance(address);
-        setBalances(prev => ({ ...prev, RAI: raiBalance }));
-      } else {
-        // EVM: fetch all ERC20 + native balances
-        const bal = await getEVMBalances(address);
-        setBalances(prev => ({ ...prev, ...bal }));
-      }
-    } catch (err) {
-      console.warn('Balance fetch error:', err.message);
+      // Kalau dipanggil tanpa argumen (dari Swap/Liquidity), kita tidak punya
+      // akses ke state terbaru via closure — jadi pakai functional setState trick:
+      // baca address dari state saat ini via setter dummy, lalu fetch.
+      await new Promise(resolve => {
+        setEvmAddress(currentEvm => {
+          setCosmosAddress(currentCosmos => {
+            const evm    = evmAddr    ?? currentEvm;
+            const cosmos = cosmosAddr ?? currentCosmos;
+            Promise.all([
+              evm    ? fetchEVMBalances(evm)       : Promise.resolve(),
+              cosmos ? fetchCosmosBalances(cosmos) : Promise.resolve(),
+            ]).then(resolve);
+            return currentCosmos; // tidak mengubah state
+          });
+          return currentEvm; // tidak mengubah state
+        });
+      });
     } finally {
       setLoadingBalances(false);
     }
-  }, [walletType]);
+  }, [fetchEVMBalances, fetchCosmosBalances]);
 
   const connectEVM = useCallback(async () => {
     try {
       const address = await connectMetaMask();
       setEvmAddress(address);
-      setWalletType(prev => prev || 'metamask');
-      await refreshBalances(address, 'metamask');
+      await fetchEVMBalances(address);
       addNotification('MetaMask connected successfully!', 'success');
     } catch (err) {
       addNotification(err.message, 'error');
     }
-  }, [addNotification, refreshBalances]);
+  }, [addNotification, fetchEVMBalances]);
 
   const connectCosmos = useCallback(async () => {
     try {
       const address = await connectKeplr();
       setCosmosAddress(address);
-      if (!walletType) setWalletType('keplr');
-      await refreshBalances(address, 'keplr');
+      await fetchCosmosBalances(address);
       addNotification('Keplr connected successfully!', 'success');
     } catch (err) {
       addNotification(err.message, 'error');
     }
-  }, [addNotification, walletType, refreshBalances]);
+  }, [addNotification, fetchCosmosBalances]);
 
   const disconnect = useCallback(() => {
     setEvmAddress(null);
     setCosmosAddress(null);
-    setWalletType(null);
     setBalances({ RAI: '0', USDT: '0', USDC: '0', WRAI: '0', WBTC: '0', WETH: '0' });
-    setShowWalletModal(false);
     addNotification('Wallet disconnected.', 'info');
   }, [addNotification]);
 
-  // Check existing connection on load
   useEffect(() => {
-    // Prefetch validator data di background saat app pertama load
     prefetchValidators().catch(() => {});
 
     setupAccountChangeListener((newAddr) => {
       if (newAddr) {
         setEvmAddress(newAddr);
-        refreshBalances(newAddr);
+        fetchEVMBalances(newAddr);
       } else {
         setEvmAddress(null);
-        setBalances({ RAI: '0', USDT: '0', USDC: '0', WRAI: '0', WBTC: '0', WETH: '0' });
+        setBalances(prev => ({ ...prev, RAI: '0', USDT: '0', USDC: '0', WRAI: '0', WBTC: '0', WETH: '0' }));
       }
     });
 
     setupNetworkChangeListener((chainId) => {
       const wrongNet = chainId !== NETWORK.chainId;
       setIsWrongNetwork(wrongNet);
-      if (wrongNet) {
-        addNotification('Please switch to Republic Testnet', 'warning');
-      }
+      if (wrongNet) addNotification('Please switch to Republic Testnet', 'warning');
     });
   }, []);
 
   const walletValue = {
     evmAddress,
     cosmosAddress,
-    walletType,
+    // walletType: untuk backward compat. Keplr prioritas di Stake page.
+    walletType: cosmosAddress ? 'keplr' : evmAddress ? 'evm' : null,
     balances,
     isWrongNetwork,
     loadingBalances,
     connectEVM,
     connectCosmos,
-    connectKeplr: connectCosmos, // ✅ FIX: alias agar Stake.jsx bisa destructure connectKeplr
+    connectKeplr: connectCosmos,
     disconnect,
-    refreshBalances: () => refreshBalances(evmAddress || cosmosAddress),
+    refreshBalances,
     addNotification,
     removeNotification,
   };
@@ -155,15 +165,12 @@ function AppContent() {
   return (
     <WalletContext.Provider value={walletValue}>
       <div className="min-h-screen bg-rai-darker">
-        {/* Background orbs */}
         <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
           <div className="bg-orb w-[600px] h-[600px] bg-blue-600/8 -top-64 -left-32" />
           <div className="bg-orb w-[400px] h-[400px] bg-blue-800/6 top-1/2 -right-32" />
           <div className="bg-orb w-[300px] h-[300px] bg-cyan-600/5 bottom-20 left-1/3" />
         </div>
-
         <Navbar />
-
         <main className="relative z-10 pt-20">
           <PageWrapper>
             <Routes>
@@ -177,16 +184,9 @@ function AppContent() {
             </Routes>
           </PageWrapper>
         </main>
-
-        {/* Notifications */}
         <div className="fixed top-24 right-4 z-50 flex flex-col gap-2 max-w-sm w-full">
           {notifications.map(n => (
-            <Notification
-              key={n.id}
-              message={n.message}
-              type={n.type}
-              onClose={() => removeNotification(n.id)}
-            />
+            <Notification key={n.id} message={n.message} type={n.type} onClose={() => removeNotification(n.id)} />
           ))}
         </div>
       </div>
@@ -195,9 +195,5 @@ function AppContent() {
 }
 
 export default function App() {
-  return (
-    <BrowserRouter>
-      <AppContent />
-    </BrowserRouter>
-  );
+  return <BrowserRouter><AppContent /></BrowserRouter>;
 }

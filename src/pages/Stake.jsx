@@ -53,8 +53,11 @@ export default function Stake() {
     refreshBalances, addNotification,
   } = useWallet();
 
-  const activeAddress = evmAddress || cosmosAddress;
-  const walletType    = evmAddress ? 'evm' : cosmosAddress ? 'keplr' : null;
+  // FIX: Keplr (cosmosAddress) selalu prioritas atas EVM untuk halaman Stake.
+  // Kalau kedua wallet connect sekaligus, semua fitur Keplr (validator check,
+  // delegations, commission) tetap jalan — tidak tertimpa oleh evmAddress.
+  const activeAddress = cosmosAddress || evmAddress;
+  const walletType    = cosmosAddress ? 'keplr' : evmAddress ? 'evm' : null;
   const isConnected   = !!activeAddress;
 
   // ── Core data ──
@@ -128,22 +131,31 @@ export default function Stake() {
   const canRedelegate    = walletType === 'keplr' && selectedValidator && stakedOnSelected > 0;
 
   // ─── Data fetching ──────────────────────────────────────────────────────────
-  useEffect(() => { fetchData(); }, [evmAddress, cosmosAddress]);
+  // FIX: Pass alamat eksplisit ke fetchData agar tidak kena stale closure.
+  // Saat MetaMask connect duluan lalu Keplr connect, React batch state update
+  // sehingga cosmosAddress baru belum tentu terbaca di dalam fetchData()
+  // kalau dipanggil tanpa argumen.
+  useEffect(() => { fetchData(cosmosAddress, evmAddress); }, [evmAddress, cosmosAddress]);
 
+  // Watch cosmosAddress langsung — pass sebagai argumen untuk hindari stale closure
   useEffect(() => {
-    if (walletType === 'keplr' && cosmosAddress) checkValidatorStatus();
+    if (cosmosAddress) checkValidatorStatus(cosmosAddress);
     else setValidatorInfo(null);
-  }, [cosmosAddress, walletType]);
+  }, [cosmosAddress]);
 
-  async function fetchData() {
+  // FIX: Terima cosAddr dan evmAddr sebagai parameter eksplisit
+  // agar tidak bergantung pada closure value yang mungkin stale.
+  async function fetchData(cosAddr, evAddr) {
     setLoading(true);
     try {
       const [vals, aprVal] = await Promise.all([getValidators(), getStakingAPR()]);
       setValidators(vals);
       setApr(aprVal);
 
-      if (activeAddress) {
-        await loadStakeInfo(vals, activeAddress);
+      // Gunakan parameter, bukan closure — ini kuncinya
+      const addr = cosAddr || evAddr;
+      if (addr) {
+        await loadStakeInfo(vals, cosAddr, evAddr);
       }
     } catch (err) {
       addNotification('Error fetching validator data: ' + err.message, 'error');
@@ -151,20 +163,19 @@ export default function Stake() {
     setLoading(false);
   }
 
-  async function loadStakeInfo(vals, addr) {
-    if (!addr) return;
-
-    if (walletType === 'keplr' || (!walletType && cosmosAddress)) {
-      // ✅ Keplr path: ambil SEMUA delegasi sekaligus — 2 API calls, bukan N calls
-      // Ini juga otomatis include validator di luar top 10
-      const info = await getAllUserDelegations(addr);
+  // FIX: Terima cosAddr dan evAddr eksplisit — tidak pakai closure cosmosAddress
+  async function loadStakeInfo(vals, cosAddr, evAddr) {
+    // Kalau ada cosmosAddress (Keplr), selalu pakai Keplr path
+    if (cosAddr) {
+      const info = await getAllUserDelegations(cosAddr);
       setUserStakeInfo(info);
     } else {
+      if (!evAddr) return;
       // EVM path: query per validator (contract)
       const info = {};
       for (const v of vals.slice(0, 20)) {
         try {
-          info[v.address] = await getUserStakeInfo(addr, v.address, 'evm');
+          info[v.address] = await getUserStakeInfo(evAddr, v.address, 'evm');
         } catch {
           info[v.address] = { stakedAmount: '0', pendingReward: '0' };
         }
@@ -173,10 +184,12 @@ export default function Stake() {
     }
   }
 
-  async function checkValidatorStatus() {
+  async function checkValidatorStatus(addr) {
+    // Terima addr sebagai parameter — tidak bergantung closure cosmosAddress yang bisa stale
+    if (!addr) return;
     setLoadingValidatorCheck(true);
     try {
-      const info = await getValidatorInfoByDelegator(cosmosAddress);
+      const info = await getValidatorInfoByDelegator(addr);
       setValidatorInfo(info);
       if (info.isValidator) {
         const commission = await getValidatorCommission(info.operatorAddress);
@@ -214,7 +227,7 @@ export default function Stake() {
       await stake(selectedValidator.address, stakeAmount, walletType);
       addNotification(`✅ Staked ${stakeAmount} RAI to ${selectedValidator.moniker}`, 'success');
       setStakeAmount('');
-      await Promise.all([fetchData(), refreshBalances()]);
+      await Promise.all([fetchData(cosmosAddress, evmAddress), refreshBalances()]);
     } catch (err) {
       const msg = err.reason || err.message || 'Transaction failed';
       addNotification(msg.includes('rejected') ? 'Transaction rejected.' : `Stake failed: ${msg}`, 'error');
@@ -234,7 +247,7 @@ export default function Stake() {
       await unstake(selectedValidator.address, unstakeAmount, walletType);
       addNotification(`⏳ Unstaking ${unstakeAmount} RAI from ${selectedValidator.moniker}`, 'success');
       setUnstakeAmount('');
-      await Promise.all([fetchData(), refreshBalances()]);
+      await Promise.all([fetchData(cosmosAddress, evmAddress), refreshBalances()]);
     } catch (err) {
       const msg = err.reason || err.message || 'Transaction failed';
       addNotification(msg.includes('rejected') ? 'Transaction rejected.' : `Unstake failed: ${msg}`, 'error');
@@ -247,7 +260,7 @@ export default function Stake() {
     try {
       await claimReward(validatorAddress, walletType);
       addNotification(`✅ Rewards claimed from ${moniker || validatorAddress.slice(0, 16)}!`, 'success');
-      await Promise.all([fetchData(), refreshBalances()]);
+      await Promise.all([fetchData(cosmosAddress, evmAddress), refreshBalances()]);
     } catch (err) {
       const msg = err.reason || err.message || 'Transaction failed';
       addNotification(msg.includes('rejected') ? 'Transaction rejected.' : `Claim failed: ${msg}`, 'error');
@@ -266,7 +279,7 @@ export default function Stake() {
     try {
       await claimAllRewards(delegatedValAddresses);
       addNotification(`✅ All rewards claimed dari ${delegatedValAddresses.length} validator!`, 'success');
-      await Promise.all([fetchData(), refreshBalances()]);
+      await Promise.all([fetchData(cosmosAddress, evmAddress), refreshBalances()]);
     } catch (err) {
       const msg = err.message || 'Transaction failed';
       addNotification(msg.includes('rejected') ? 'Transaction rejected.' : `Claim all failed: ${msg}`, 'error');
@@ -276,7 +289,12 @@ export default function Stake() {
   async function handleWithdrawAll() {
     if (!isConnected || walletType !== 'keplr') return;
     const allValAddrs  = Object.keys(userStakeInfo);
-    const operatorAddr = validatorInfo?.isValidator ? validatorInfo.operatorAddress : null;
+    // FIX: Gunakan parseFloat untuk cek commission, bukan string === '0'
+    // API bisa return "0.000000000000000000" yang !== '0' padahal nilainya nol
+    const hasCommission = parseFloat(commissionAmount) > 0;
+    const operatorAddr  = validatorInfo?.isValidator && hasCommission
+      ? validatorInfo.operatorAddress
+      : null;
 
     if (!allValAddrs.length && !operatorAddr) {
       addNotification('Tidak ada yang bisa di-withdraw', 'warning'); return;
@@ -287,7 +305,7 @@ export default function Stake() {
       await withdrawAllRewardsAndCommission(allValAddrs, operatorAddr);
       const label = operatorAddr ? 'All rewards + commission' : 'All rewards';
       addNotification(`✅ ${label} berhasil di-withdraw!`, 'success');
-      await Promise.all([fetchData(), refreshCommission(), refreshBalances()]);
+      await Promise.all([fetchData(cosmosAddress, evmAddress), refreshCommission(), refreshBalances()]);
     } catch (err) {
       const msg = err.message || 'Transaction failed';
       addNotification(msg.includes('rejected') ? 'Transaction rejected.' : `Withdraw all failed: ${msg}`, 'error');
@@ -309,7 +327,7 @@ export default function Stake() {
       await redelegate(selectedValidator.address, redelegateDst.address, redelegateAmount, walletType);
       addNotification(`✅ Redelegated ${redelegateAmount} RAI → ${redelegateDst.moniker}`, 'success');
       setRedelegateAmount(''); setShowRedelegateModal(false); setRedelegateDst(null);
-      await Promise.all([fetchData(), refreshBalances()]);
+      await Promise.all([fetchData(cosmosAddress, evmAddress), refreshBalances()]);
     } catch (err) {
       const msg = err.reason || err.message || 'Transaction failed';
       addNotification(msg.includes('rejected') ? 'Transaction rejected.' : `Redelegate failed: ${msg}`, 'error');
