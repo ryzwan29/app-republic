@@ -12,9 +12,14 @@
   }
 
   body {
-    @apply bg-rai-darker text-white font-body;
+    @apply text-white font-body;
     background-color: #030509;
     overflow-x: hidden;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    background-size: 50px 50px;
+    background-attachment: fixed;
   }
 
   ::-webkit-scrollbar {

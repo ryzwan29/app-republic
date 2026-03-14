@@ -269,7 +269,7 @@ export default function Liquidity() {
 
       <div className="mb-8">
         <h1 className="font-display font-bold text-3xl text-white mb-1">Liquidity</h1>
-        <p className="text-slate-500 text-sm">Provide liquidity and earn 0.3% from every swap</p>
+        <p className="text-slate-500 text-sm">Provide liquidity and earn 0.2% from every swap</p>
       </div>
 
       {/* Pool overview */}
@@ -563,7 +563,7 @@ export default function Liquidity() {
                     <div className="text-lg font-display font-semibold text-green-400">{apr.toFixed(2)}%</div>
                   )}
                   <div className="text-xs text-slate-500">
-                    {apr > 0 ? 'Based on 24h swap volume' : '0.3% per swap'}
+                    {apr > 0 ? 'Based on 24h swap volume' : '0.2% per swap'}
                   </div>
                 </div>
               </div>
@@ -604,7 +604,7 @@ export default function Liquidity() {
                   ['Total LP Supply', formatBalance(currentPool.totalSupply) + ' LP'],
                   ['Your LP Balance', formatBalance(currentLP) + ' LP'],
                   ['Your Pool Share', lpShare.toFixed(4) + '%'],
-                  ['Swap Fee', '0.3% → 100% to LPs'],
+                  ['Swap Fee', '0.2% to LP'],
                 ].map(([k, v]) => (
                   <div key={k} className="flex justify-between text-sm">
                     <span className="text-slate-500">{k}</span>

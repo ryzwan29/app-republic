@@ -1,6 +1,7 @@
 import { useState, useEffect, createContext, useContext, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import Navbar from './components/Navbar.jsx';
+import Footer from './components/Footer.jsx';
 import Notification from './components/Notification.jsx';
 import Home from './pages/Home.jsx';
 import Dashboard from './pages/Dashboard.jsx';
@@ -175,14 +176,14 @@ function AppContent() {
 
   return (
     <WalletContext.Provider value={walletValue}>
-      <div className="min-h-screen bg-rai-darker">
+      <div className="min-h-screen flex flex-col" style={{backgroundColor:'#030509', backgroundImage:'linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)', backgroundSize:'80px 80px'}}>
         <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
           <div className="bg-orb w-[600px] h-[600px] bg-blue-600/8 -top-64 -left-32" />
           <div className="bg-orb w-[400px] h-[400px] bg-blue-800/6 top-1/2 -right-32" />
           <div className="bg-orb w-[300px] h-[300px] bg-cyan-600/5 bottom-20 left-1/3" />
         </div>
         <Navbar />
-        <main className="relative z-10 pt-20">
+        <main className="relative z-10 pt-20 flex-1">
           <PageWrapper>
             <Routes>
               <Route path="/" element={<Home />} />
@@ -195,6 +196,7 @@ function AppContent() {
             </Routes>
           </PageWrapper>
         </main>
+        <Footer />
         <div className="fixed top-24 right-4 z-50 flex flex-col gap-2 max-w-sm w-full">
           {notifications.map(n => (
             <Notification key={n.id} message={n.message} type={n.type} onClose={() => removeNotification(n.id)} />

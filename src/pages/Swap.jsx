@@ -368,7 +368,7 @@ export default function Swap() {
             )}
 
             <div className="flex justify-between">
-              <span className="text-slate-500">Fee (0.3%)</span>
+              <span className="text-slate-500">Fee (0.3%: 0.2% LP + 0.1% dev)</span>
               <span className="text-white font-mono">{(parseFloat(fromAmount) * 0.003).toFixed(6)} {fromToken}</span>
             </div>
             <div className="flex justify-between">

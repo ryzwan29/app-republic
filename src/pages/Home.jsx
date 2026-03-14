@@ -205,12 +205,12 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Footer */}
+      {/* Footer
       <footer className="border-t border-blue-900/30 py-8 text-center">
         <p className="text-slate-600 text-sm font-display">
           Republic DEX · Testnet Environment · Not for production use
         </p>
-      </footer>
+      </footer> */}
     </div>
   );
 }
