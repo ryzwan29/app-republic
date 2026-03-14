@@ -2,18 +2,20 @@
 // Otomatis pindah ke provider berikutnya kalau yang aktif down.
 // Urutan prioritas: Official → NodeStake → RydOne
 
+// Diurutkan berdasarkan latency test: NodeStake paling cepet untuk semua endpoint.
+// Official EVM kena CORS dari browser tapi tetap disertakan sebagai fallback terakhir.
 const PROVIDERS = [
-  {
-    name: 'Official',
-    evm: 'https://evm-rpc.republicai.io',
-    rpc: 'https://rpc.republicai.io',
-    api: 'https://rest.republicai.io',
-  },
   {
     name: 'NodeStake',
     evm: 'https://evmrpc-t.republicai.nodestake.org',
     rpc: 'https://rpc-t.republicai.nodestake.org',
     api: 'https://api-t.republicai.nodestake.org',
+  },
+  {
+    name: 'Official',
+    evm: 'https://evm-rpc.republicai.io',
+    rpc: 'https://rpc.republicai.io',
+    api: 'https://rest.republicai.io',
   },
   {
     name: 'RydOne',
