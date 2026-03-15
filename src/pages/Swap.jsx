@@ -11,6 +11,7 @@ import {
   getOraclePrice,
   getOraclePriceImpact,
   invalidatePoolCache,
+  isOracleSwapPair,
 } from '../blockchain/amm.js';
 import { formatBalance, getWeb3Provider } from '../blockchain/evm.js';
 import { TOKENS, CONTRACTS } from '../blockchain/tokens.js';
@@ -43,10 +44,11 @@ export default function Swap() {
   const [fromAmount, setFromAmount] = useState('');
   const [toAmount,   setToAmount]   = useState('');
 
-  // AMM impact (from pool reserves)
   const [ammImpact, setAmmImpact] = useState(null);
   // Oracle impact — recalculated whenever oraclePrices OR amounts change
   const [oracleImpact, setOracleImpact] = useState(null);
+  // OracleSwap error reason (e.g. "Pair not enabled", "Insufficient reserve")
+  const [oracleSwapError, setOracleSwapError] = useState(null);
 
   // Oracle price state + refresh UI
   const [oraclePrices,  setOraclePrices]  = useState({});
@@ -63,6 +65,7 @@ export default function Swap() {
   const fromBalance = balances[fromToken] || '0';
   const toBalance   = balances[toToken]   || '0';
   const isWrap      = isWrapPair(fromToken, toToken);
+  const isOracleSwap = !isWrap && isOracleSwapPair(fromToken, toToken);
 
   // ── 1. Oracle price fetch (60s interval) ──────────────────────────────────
   const fetchPricesRef = useRef(null);
@@ -107,33 +110,53 @@ export default function Swap() {
     return () => clearInterval(tick);
   }, [isWrap]);
 
-  // ── 3. AMM quote (debounced, on amount/token change) ──────────────────────
+  // ── 3. AMM/OracleSwap quote (debounced, on amount/token change) ──────────
   useEffect(() => {
     if (isWrap) {
       setToAmount(fromAmount);
       setAmmImpact(null);
+      setOracleSwapError(null);
       return;
     }
     const timer = setTimeout(async () => {
       if (!fromAmount || parseFloat(fromAmount) === 0) {
-        setToAmount(''); setAmmImpact(null); setOracleImpact(null);
+        setToAmount(''); setAmmImpact(null); setOracleImpact(null); setOracleSwapError(null);
         return;
       }
       setQuoting(true);
-      try {
-        const [out, amm] = await Promise.all([
-          getAmountOut(fromAmount, fromToken, toToken),
-          getPriceImpact(fromAmount, fromToken, toToken),
-        ]);
-        setToAmount(out);
-        setAmmImpact(amm);
-      } catch {
-        setToAmount(''); setAmmImpact(null);
+      setOracleSwapError(null);
+
+      if (isOracleSwap) {
+        // OracleSwap path — hanya getAmountOut, tidak perlu AMM impact
+        try {
+          const out = await getAmountOut(fromAmount, fromToken, toToken);
+          setToAmount(out);
+          setAmmImpact(null);
+        } catch (err) {
+          // Ekstrak pesan error yang bersih
+          const raw = err.message || '';
+          const reason = raw.replace('OracleSwap: ', '');
+          setOracleSwapError(reason);
+          setToAmount('');
+          setAmmImpact(null);
+        }
+      } else {
+        // AMM Router path — getAmountOut + getPriceImpact
+        try {
+          const [out, amm] = await Promise.all([
+            getAmountOut(fromAmount, fromToken, toToken),
+            getPriceImpact(fromAmount, fromToken, toToken),
+          ]);
+          setToAmount(out);
+          setAmmImpact(amm);
+        } catch {
+          setToAmount(''); setAmmImpact(null);
+        }
       }
       setQuoting(false);
     }, 500);
     return () => clearTimeout(timer);
-  }, [fromAmount, fromToken, toToken, isWrap]);
+  }, [fromAmount, fromToken, toToken, isWrap, isOracleSwap]);
 
   // ── 4. Oracle impact (recalculates whenever oraclePrices OR amounts change) ──
   //    This is the KEY fix — oraclePrices is in deps so it re-runs on every refresh
@@ -151,6 +174,7 @@ export default function Swap() {
   function swapTokens() {
     setFromToken(toToken); setToToken(fromToken);
     setFromAmount(toAmount); setToAmount(fromAmount);
+    setOracleSwapError(null);
   }
 
   async function handleSwap() {
@@ -201,14 +225,20 @@ export default function Swap() {
   }
 
   const effectiveSlippage = customSlippage ? parseFloat(customSlippage) : slippage;
-  const routeSymbols = isWrap ? [fromToken, toToken] : getRouteSymbols(fromToken, toToken);
-  const isMultihop   = !isWrap && routeSymbols.length > 2;
+  const routeSymbols = isWrap ? [fromToken, toToken] : isOracleSwap ? [fromToken, toToken] : getRouteSymbols(fromToken, toToken);
+  const isMultihop   = !isWrap && !isOracleSwap && routeSymbols.length > 2;
 
   const fromUSD = oraclePrices[fromToken];
   const toUSD   = oraclePrices[toToken];
   const oracleFairRate = (fromUSD && toUSD) ? fromUSD / toUSD : null;
-  const executionRate  = (fromAmount && toAmount && parseFloat(fromAmount) > 0)
-    ? parseFloat(toAmount) / parseFloat(fromAmount) : null;
+
+  // Untuk OracleSwap: tampilkan oracle price (pre-fee), bukan post-fee execution rate
+  // Ini biar keliatan bahwa harga = market price, fee dipotong terpisah
+  const executionRate = isOracleSwap
+    ? oracleFairRate  // 1:1 dengan oracle → tampilkan oracle price
+    : (fromAmount && toAmount && parseFloat(fromAmount) > 0)
+      ? parseFloat(toAmount) / parseFloat(fromAmount)
+      : null;
 
   const featuredImpact = oracleImpact !== null ? oracleImpact : ammImpact;
   const { color: impactColor, label: impactLabel } = impactStyle(featuredImpact);
@@ -328,6 +358,7 @@ export default function Swap() {
                 1 {fromToken} = {executionRate ? executionRate.toFixed(6) : '—'} {toToken}
               </span>
             </div>
+
             <div className="flex justify-between items-center">
               <span className="text-slate-500 flex items-center gap-1">
                 Market Rate
@@ -342,16 +373,16 @@ export default function Swap() {
             <div className="flex justify-between items-center">
               <span className="text-slate-500 flex items-center gap-1">
                 Price Impact
-                <span className="text-xs text-slate-600">
-                  {oracleImpact !== null ? '(vs oracle)' : ammImpact !== null ? '(vs pool)' : ''}
-                </span>
+                {isOracleSwap && (
+                  <span className="text-xs text-blue-400/70">(no pool slippage)</span>
+                )}
               </span>
-              <span className={`font-mono font-semibold text-base ${impactColor}`}>
-                {quoting ? '...' : impactLabel}
+              <span className={`font-mono font-semibold text-base ${isOracleSwap ? 'text-green-400' : impactColor}`}>
+                {quoting ? '...' : isOracleSwap ? '0.00%' : impactLabel}
               </span>
             </div>
 
-            {featuredImpact !== null && featuredImpact > 5 && (
+            {!isOracleSwap && featuredImpact !== null && featuredImpact > 5 && (
               <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs ${
                 featuredImpact > 10
                   ? 'bg-red-900/20 border-red-500/30 text-red-400'
@@ -367,8 +398,35 @@ export default function Swap() {
               </div>
             )}
 
+            {isOracleSwap && oracleSwapError && (
+              <div className="flex items-start gap-2 px-3 py-2 rounded-lg border border-red-500/30 bg-red-900/15 text-xs text-red-400">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mt-0.5 shrink-0">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <span>
+                  <span className="font-semibold">OracleSwap not available: </span>
+                  {oracleSwapError}
+                  {oracleSwapError.toLowerCase().includes('pair') && (
+                    <span className="block mt-1 text-slate-500">
+                      Pastikan pair sudah di-enable dan reserve sudah diisi di OracleSwap contract.
+                    </span>
+                  )}
+                  {oracleSwapError.toLowerCase().includes('reserve') && (
+                    <span className="block mt-1 text-slate-500">
+                      Reserve OracleSwap habis — deposit token ke contract dulu.
+                    </span>
+                  )}
+                  {oracleSwapError.toLowerCase().includes('not ready') && (
+                    <span className="block mt-1 text-slate-500">
+                      Cek: 1) Alamat ORACLE_SWAP di tokens.js 2) enablePair() sudah dipanggil 3) setTokenDecimals() sudah diset.
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
+
             <div className="flex justify-between">
-              <span className="text-slate-500">Fee (0.3%: 0.2% LP + 0.1% dev)</span>
+              <span className="text-slate-500">Fee (0.3%)</span>
               <span className="text-white font-mono">{(parseFloat(fromAmount) * 0.003).toFixed(6)} {fromToken}</span>
             </div>
             <div className="flex justify-between">
@@ -404,12 +462,13 @@ export default function Swap() {
         {/* SWAP BUTTON */}
         <button
           onClick={handleSwap}
-          disabled={swapping || (evmAddress && (!fromAmount || parseFloat(fromAmount) === 0))}
-          className={`btn-primary w-full py-4 text-base ${featuredImpact !== null && featuredImpact > 10 ? 'border border-red-500/50' : ''}`}
+          disabled={swapping || (evmAddress && (!fromAmount || parseFloat(fromAmount) === 0)) || !!oracleSwapError}
+          className={`btn-primary w-full py-4 text-base ${!isOracleSwap && featuredImpact !== null && featuredImpact > 10 ? 'border border-red-500/50' : ''}`}
         >
           {!evmAddress                                          ? 'Connect Wallet to Swap'
            : !fromAmount                                        ? 'Enter an Amount'
            : parseFloat(fromAmount) > parseFloat(fromBalance)  ? 'Insufficient Balance'
+           : oracleSwapError                                    ? 'OracleSwap Unavailable'
            : quoting                                            ? 'Getting Quote...'
            : isWrap && fromToken === 'RAI'                      ? `Wrap ${fromToken} → ${toToken}`
            : isWrap && fromToken === 'WRAI'                     ? `Unwrap ${fromToken} → ${toToken}`
@@ -427,8 +486,8 @@ export default function Swap() {
               {i < arr.length - 1 && (
                 <>
                   <div className="border-t border-dashed border-blue-900/40 w-6" />
-                  <div className={`text-xs px-2 rounded-full border ${isWrap ? 'badge-green border-green-500/30 text-green-400' : 'badge-blue'}`}>
-                    {isWrap ? 'Wrap' : 'AMM'}
+                  <div className={`text-xs px-2 rounded-full border ${isWrap ? 'badge-green border-green-500/30 text-green-400' : isOracleSwap ? 'badge-blue border-blue-400/40 text-blue-300' : 'badge-blue'}`}>
+                    {isWrap ? 'Wrap' : isOracleSwap ? 'Oracle' : 'AMM'}
                   </div>
                   <div className="border-t border-dashed border-blue-900/40 w-6" />
                 </>
@@ -437,6 +496,7 @@ export default function Swap() {
           ))}
         </div>
         {isMultihop && <p className="text-xs text-slate-600 mt-2">Routed via WRAI — no direct pool available</p>}
+        {isOracleSwap && <p className="text-xs text-blue-500/60 mt-2">Direct oracle swap — no AMM pool, no rebalance needed</p>}
       </div>
 
       {/* ORACLE PRICE PANEL with countdown */}

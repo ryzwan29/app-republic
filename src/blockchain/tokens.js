@@ -99,6 +99,32 @@ export const ORACLE_ABI = [
   'function latestRoundData() external view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)',
 ];
 
+// OracleSwap ABI — oracle-priced swap (no slippage, always market price)
+export const ORACLE_SWAP_ABI = [
+  'function swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOutMin, address to) external returns (uint256 amountOut)',
+  'function getQuote(address tokenIn, address tokenOut, uint256 amountIn) external view returns (uint256 amountOut, uint256 amountOutGross, uint256 feeAmount, uint256 priceIn, uint256 priceOut)',
+  'function canSwap(address tokenIn, address tokenOut, uint256 amountIn) external view returns (bool possible, string memory reason, uint256 amountOut)',
+  'function getReserves(address[] calldata tokens) external view returns (uint256[] memory)',
+  'function pairEnabled(bytes32 key) external view returns (bool)',
+  'function paused() external view returns (bool)',
+];
+
+// Pasangan token yang pakai OracleSwap (bukan AMM Router)
+// Semua pair ini punya oracle price langsung — tidak perlu WRAI sebagai perantara
+export const ORACLE_SWAP_PAIRS = new Set([
+  'WETH-USDC', 'USDC-WETH',
+  'WETH-USDT', 'USDT-WETH',
+  'WBTC-USDC', 'USDC-WBTC',
+  'WBTC-USDT', 'USDT-WBTC',
+  'WETH-WBTC', 'WBTC-WETH',
+  'USDC-USDT', 'USDT-USDC',
+]);
+
+/** Cek apakah pair harus pakai OracleSwap atau Router AMM */
+export function isOracleSwapPair(fromSymbol, toSymbol) {
+  return ORACLE_SWAP_PAIRS.has(`${fromSymbol}-${toSymbol}`);
+}
+
 // Staking ABI
 export const STAKING_ABI = [
   'function stake(address validator, uint256 amount) external',
@@ -124,17 +150,6 @@ export const FAUCET_ABI = [
   'function paused() external view returns (bool)',
 ];
 
-// Contract addresses (placeholder - to be updated with deployed addresses)
-// export const CONTRACTS = {
-//   USDT: '0x25DbA0f51E19dBc5BF9bFb6061334D3A5F1a9BD3',
-//   USDC: '0x6fbB6b92c2445228a8b21692D347578FC57180ba',
-//   WRAI: '0x0000000000000000000000000000000000000003',
-//   ROUTER: '0x0000000000000000000000000000000000000004',
-//   FACTORY: '0x0000000000000000000000000000000000000005',
-//   STAKING: '0x0000000000000000000000000000000000000006',
-//   FAUCET: '0x0000000000000000000000000000000000000007',
-// };
-
 export const CONTRACTS = {
   USDT: '0x25DbA0f51E19dBc5BF9bFb6061334D3A5F1a9BD3',
   USDC: '0x6fbB6b92c2445228a8b21692D347578FC57180ba',
@@ -146,6 +161,7 @@ export const CONTRACTS = {
   FACTORY: '0x9f417E482079Ad217aD2E96fB55c2CDf4Fb3f852',
   STAKING: '0x0000000000000000000000000000000000000006',
   FAUCET: '0xdB7e012f6E3e6eD357D10bf39b9ca75C6fE8dFA1',
+  ORACLE_SWAP: '0x7979CB74Bd1405c82F96D538802137FBa1E5d74e',
 };
 
 // Pair contract addresses — address pool untuk tiap pasangan WRAI
@@ -221,7 +237,7 @@ export const TOKENS = {
 
 export const TOKEN_LIST = Object.values(TOKENS);
 
-// Semua kombinasi swap didukung via WRAI routing
+// Semua kombinasi swap didukung via WRAI routing atau OracleSwap
 export const SWAP_PAIRS = [
   { from: 'RAI',  to: 'USDT' }, { from: 'RAI',  to: 'USDC' },
   { from: 'RAI',  to: 'WBTC' }, { from: 'RAI',  to: 'WETH' },

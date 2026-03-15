@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import { getProvider, getWeb3Provider } from './evm.js';
-import { CONTRACTS, TOKENS, ROUTER_ABI, FACTORY_ABI, PAIR_ABI, PAIR_CORE_ABI, LP_TOKEN_ABI, ERC20_ABI, ORACLE_ABI, SWAP_FEE, POOL_CONTRACTS } from './tokens.js';
+import { CONTRACTS, TOKENS, ROUTER_ABI, FACTORY_ABI, PAIR_ABI, PAIR_CORE_ABI, LP_TOKEN_ABI, ERC20_ABI, ORACLE_ABI, ORACLE_SWAP_ABI, SWAP_FEE, POOL_CONTRACTS, isOracleSwapPair } from './tokens.js';
 
 // ─── In-memory caches ──────────────────────────────────────────────────────────
 // lpToken dan token0 per pair — nilainya static, tidak pernah berubah
@@ -102,6 +102,111 @@ function getPairContract(pairAddress, signerOrProvider) {
   return new ethers.Contract(pairAddress, PAIR_ABI, signerOrProvider);
 }
 
+function getOracleSwapContract(signerOrProvider) {
+  return new ethers.Contract(CONTRACTS.ORACLE_SWAP, ORACLE_SWAP_ABI, signerOrProvider);
+}
+
+// ─── OracleSwap helpers ───────────────────────────────────────────────────────
+
+/**
+ * Ambil quote dari OracleSwap contract.
+ * Harga selalu = oracle price, tidak ada slippage dari pool size.
+ * Returns string amount, atau throws dengan pesan error yang jelas.
+ */
+export async function getAmountOutOracleSwap(amountIn, fromSymbol, toSymbol) {
+  if (!amountIn || parseFloat(amountIn) === 0) return '0';
+  try {
+    const provider   = getProvider();
+    const oracleSwap = getOracleSwapContract(provider);
+    const fromToken  = TOKENS[fromSymbol];
+    const toToken    = TOKENS[toSymbol];
+    const amountInParsed = ethers.parseUnits(amountIn.toString(), fromToken.decimals);
+
+    // Cek canSwap dulu — dapat reason kalau gagal
+    try {
+      const [possible, reason] = await oracleSwap.canSwap(
+        fromToken.address, toToken.address, amountInParsed
+      );
+      if (!possible) {
+        console.warn(`[OracleSwap] canSwap=false: ${reason}`);
+        // Lempar error dengan reason yang bisa ditangkap Swap.jsx
+        throw new Error(`OracleSwap: ${reason}`);
+      }
+    } catch (canSwapErr) {
+      // kalau canSwap itu sendiri revert (contract belum deploy / pair belum enable)
+      if (canSwapErr.message.startsWith('OracleSwap:')) throw canSwapErr;
+      console.warn('[OracleSwap] canSwap call failed:', canSwapErr.message);
+      throw new Error('OracleSwap: Contract not ready — check pair is enabled and reserves are deposited');
+    }
+
+    const [amountOut] = await oracleSwap.getQuote(fromToken.address, toToken.address, amountInParsed);
+    return ethers.formatUnits(amountOut, toToken.decimals);
+  } catch (err) {
+    // Re-throw error dengan prefix OracleSwap agar Swap.jsx bisa distinguish
+    if (err.message.startsWith('OracleSwap:')) throw err;
+    console.warn('[getAmountOutOracleSwap] error:', err.message);
+    throw new Error('OracleSwap: Failed to get quote');
+  }
+}
+
+/**
+ * Cek reserve OracleSwap untuk token tertentu.
+ */
+export async function getOracleSwapReserves(symbols) {
+  try {
+    const provider  = getProvider();
+    const oracleSwap = getOracleSwapContract(provider);
+    const addresses = symbols.map(s => TOKENS[s]?.address).filter(Boolean);
+    const balances  = await oracleSwap.getReserves(addresses);
+    const result    = {};
+    symbols.forEach((s, i) => {
+      result[s] = ethers.formatUnits(balances[i], TOKENS[s]?.decimals || 18);
+    });
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Execute swap via OracleSwap contract.
+ * Approve → swap(tokenIn, tokenOut, amountIn, amountOutMin, to)
+ */
+export async function executeOracleSwap({ fromSymbol, toSymbol, amountIn, amountOutMin, slippage = 0.5, userAddress }) {
+  const web3Provider   = await getWeb3Provider();
+  const signer         = await web3Provider.getSigner();
+  const oracleSwap     = getOracleSwapContract(signer);
+
+  const fromToken = TOKENS[fromSymbol];
+  const toToken   = TOKENS[toSymbol];
+
+  const amountInParsed = ethers.parseUnits(amountIn.toString(), fromToken.decimals);
+  const amountOutMinParsed = ethers.parseUnits(
+    (parseFloat(amountOutMin) * (1 - slippage / 100)).toFixed(toToken.decimals),
+    toToken.decimals
+  );
+
+  // Approve OracleSwap kalau belum
+  const tokenContract = new ethers.Contract(fromToken.address, ERC20_ABI, signer);
+  const allowance = await tokenContract.allowance(userAddress, CONTRACTS.ORACLE_SWAP);
+  if (allowance < amountInParsed) {
+    const approveTx = await tokenContract.approve(CONTRACTS.ORACLE_SWAP, ethers.MaxUint256);
+    await approveTx.wait();
+  }
+
+  const tx = await oracleSwap.swap(
+    fromToken.address,
+    toToken.address,
+    amountInParsed,
+    amountOutMinParsed,
+    userAddress
+  );
+  return tx.wait();
+}
+
+// ─── Export helper buat Swap.jsx ──────────────────────────────────────────────
+export { isOracleSwapPair };
+
 function tokenAddr(symbol) {
   const t = TOKENS[symbol];
   if (!t) return null;
@@ -147,6 +252,13 @@ export function getRouteSymbols(fromSymbol, toSymbol) {
 
 export async function getAmountOut(amountIn, fromSymbol, toSymbol) {
   if (!amountIn || parseFloat(amountIn) === 0) return '0';
+
+  // OracleSwap pairs → harga langsung dari oracle, tidak pakai AMM
+  if (isOracleSwapPair(fromSymbol, toSymbol)) {
+    return getAmountOutOracleSwap(amountIn, fromSymbol, toSymbol);
+    // Note: getAmountOutOracleSwap throws dengan pesan jelas kalau gagal
+    // Caller (Swap.jsx) harus catch dan tampilkan error
+  }
 
   try {
     const rpcProvider = getProvider();
@@ -213,6 +325,11 @@ export async function getPriceImpact(amountIn, fromSymbol, toSymbol) {
 }
 
 export async function executeSwap({ fromSymbol, toSymbol, amountIn, amountOutMin, slippage = 0.5, userAddress }) {
+  // OracleSwap pairs → pakai contract OracleSwap, bukan Router AMM
+  if (isOracleSwapPair(fromSymbol, toSymbol)) {
+    return executeOracleSwap({ fromSymbol, toSymbol, amountIn, amountOutMin, slippage, userAddress });
+  }
+
   const web3Provider = await getWeb3Provider();
   const signerInstance = await web3Provider.getSigner();
   const router = getRouterContract(signerInstance);
@@ -238,25 +355,14 @@ export async function executeSwap({ fromSymbol, toSymbol, amountIn, amountOutMin
     }
   }
 
-  let tx;
-  if (fromToken.isNative) {
-    // RAI native → token
-    tx = await router.swapExactETHForTokens(
-      amountOutMinParsed, path, userAddress, deadline,
-      { value: amountInParsed }
-    );
-  } else if (toToken.isNative) {
-    // token → RAI native
-    tx = await router.swapExactTokensForETH(
-      amountInParsed, amountOutMinParsed, path, userAddress, deadline
-    );
-  } else {
-    // token → token (includes multihop via WRAI)
-    tx = await router.swapExactTokensForTokens(
-      amountInParsed, amountOutMinParsed, path, userAddress, deadline
-    );
+  // Router kita tidak punya swapExactETHForTokens — RAI native harus wrap dulu
+  if (fromToken.isNative || toToken.isNative) {
+    throw new Error('Swap RAI native tidak didukung langsung. Wrap RAI → WRAI dulu.');
   }
 
+  const tx = await router.swapExactTokensForTokens(
+    amountInParsed, amountOutMinParsed, path, userAddress, deadline
+  );
   return tx.wait();
 }
 
