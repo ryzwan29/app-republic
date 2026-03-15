@@ -83,6 +83,7 @@ function apiRoutesPlugin() {
       }
 
       registerRoute('/api/analyze',          'analyze.js');
+      registerRoute('/api/trading-assistant', 'trading-assistant.js');
       registerRoute('/api/verify-turnstile', 'verify-turnstile.js');
 
       // ── Swap Volume API ──────────────────────────────────────────────────────

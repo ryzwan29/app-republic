@@ -115,7 +115,18 @@ app.use('/api/analyze', async (req, res) => {
   }
 });
 
-// ── 3. /api/verify-turnstile ──────────────────────────────────────────────────
+// ── 3. /api/trading-assistant ─────────────────────────────────────────────────
+app.use('/api/trading-assistant', express.json(), async (req, res) => {
+  try {
+    const { handler } = await import('./api/trading-assistant.js');
+    await handler(req, res);
+  } catch (err) {
+    console.error('[/api/trading-assistant]', err);
+    res.status(500).json({ error: err.message || 'Internal server error' });
+  }
+});
+
+// ── 3b. /api/verify-turnstile ──────────────────────────────────────────────────
 app.use('/api/verify-turnstile', async (req, res) => {
   try {
     const { handler } = await import('./api/verify-turnstile.js');
@@ -165,6 +176,7 @@ app.listen(PORT, () => {
   console.log(`✓ Republic DEX server running on http://localhost:${PORT}`);
   console.log(`  /rpc  → auto-sorted by latency (checking…)`);
   console.log(`  /api/analyze               → api/analyze.js`);
+  console.log(`  /api/trading-assistant     → api/trading-assistant.js`);
   console.log(`  /api/verify-turnstile      → api/verify-turnstile.js`);
   console.log(`  /api/swap-volume/record    → api/swapVolumeDb.js`);
   console.log(`  /api/swap-volume/all       → api/swapVolumeDb.js`);

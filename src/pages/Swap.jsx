@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ethers } from 'ethers';
 import { useWallet } from '../App.jsx';
+import { useAI } from '../contexts/AIContext.jsx';
 import { TokenSelector, TokenIcon } from '../components/TokenSelector.jsx';
 import LoadingSpinner, { LoadingOverlay } from '../components/LoadingSpinner.jsx';
 import {
@@ -39,10 +40,24 @@ function impactStyle(pct) {
 
 export default function Swap() {
   const { evmAddress, balances, connectEVM, refreshBalances, addNotification, removeNotification } = useWallet();
+  const { pendingAction, clearPendingAction } = useAI();
   const [fromToken,  setFromToken]  = useState('RAI');
   const [toToken,    setToToken]    = useState('USDT');
   const [fromAmount, setFromAmount] = useState('');
   const [toAmount,   setToAmount]   = useState('');
+
+  // ── AI Prefill: apply pending action from AI assistant ────────────────────
+  useEffect(() => {
+    if (!pendingAction) return;
+    const { action, token_in, token_out, amount } = pendingAction;
+    if (action === 'swap' || action === 'simulate_swap' || action === 'best_route') {
+      if (token_in)  setFromToken(token_in.toUpperCase());
+      if (token_out) setToToken(token_out.toUpperCase());
+      if (amount)    setFromAmount(String(amount));
+      clearPendingAction();
+      addNotification(`AI prefilled: ${amount || ''} ${token_in || ''} → ${token_out || ''}`, 'info');
+    }
+  }, [pendingAction]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [ammImpact, setAmmImpact] = useState(null);
   // Oracle impact — recalculated whenever oraclePrices OR amounts change

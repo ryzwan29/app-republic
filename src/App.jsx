@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import Navbar from './components/Navbar.jsx';
 import Footer from './components/Footer.jsx';
 import Notification from './components/Notification.jsx';
+import AITradingAssistant from './components/AITradingAssistant.jsx';
 import Home from './pages/Home.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Swap from './pages/Swap.jsx';
@@ -10,6 +11,7 @@ import Liquidity from './pages/Liquidity.jsx';
 import Stake from './pages/Stake.jsx';
 import Faucet from './pages/Faucet.jsx';
 import AnalyzeContract from './pages/AnalyzeContract.jsx';
+import { AIProvider } from './contexts/AIContext.jsx';
 import {
   connectMetaMask,
   setupAccountChangeListener,
@@ -183,6 +185,7 @@ function AppContent() {
           <div className="bg-orb w-[300px] h-[300px] bg-cyan-600/5 bottom-20 left-1/3" />
         </div>
         <Navbar />
+        <AITradingAssistant />
         <main className="relative z-10 pt-20 flex-1">
           <PageWrapper>
             <Routes>
@@ -208,5 +211,5 @@ function AppContent() {
 }
 
 export default function App() {
-  return <BrowserRouter><AppContent /></BrowserRouter>;
+  return <AIProvider><BrowserRouter><AppContent /></BrowserRouter></AIProvider>;
 }

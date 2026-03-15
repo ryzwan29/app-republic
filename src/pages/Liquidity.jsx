@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useWallet } from '../App.jsx';
+import { useAI } from '../contexts/AIContext.jsx';
 import { TokenIcon } from '../components/TokenSelector.jsx';
 import { LoadingOverlay } from '../components/LoadingSpinner.jsx';
 import { getPoolReserves, getUserLPBalance, addLiquidity, removeLiquidity, getAllOraclePrices, invalidatePoolCache } from '../blockchain/amm.js';
@@ -89,6 +90,7 @@ const TABS = ['Add Liquidity', 'Remove Liquidity', 'My Positions'];
 
 export default function Liquidity() {
   const { evmAddress, balances, connectEVM, refreshBalances, addNotification, removeNotification } = useWallet();
+  const { pendingAction, clearPendingAction } = useAI();
   const [activeTab, setActiveTab] = useState('Add Liquidity');
   const [selectedPair, setSelectedPair] = useState(POOL_PAIRS[0]);
   const [amount0, setAmount0] = useState('');
@@ -100,6 +102,37 @@ export default function Liquidity() {
   const [txPending, setTxPending] = useState(false);
   const [tokenPrices, setTokenPrices] = useState({ WBTC: 0, WETH: 0, USDT: 1, USDC: 1, WRAI: 0, RAI: 0 });
   const [aprData, setAprData] = useState({});
+
+  // AI Prefill: apply pending action from AI assistant
+  useEffect(() => {
+    if (!pendingAction) return;
+    const { action, tokenA, tokenB, amountA, amountB, pair } = pendingAction;
+    if (action === 'add_liquidity') {
+      setActiveTab('Add Liquidity');
+      const symA = (tokenA || '').toUpperCase();
+      const symB = (tokenB || '').toUpperCase();
+      const match = POOL_PAIRS.find(p => [p.token0, p.token1].includes(symA) && [p.token0, p.token1].includes(symB));
+      if (match) setSelectedPair(match);
+      if (amountA) setAmount0(String(amountA));
+      if (amountB) setAmount1(String(amountB));
+      clearPendingAction();
+      addNotification('AI prefilled: Add ' + symA + '/' + symB + ' liquidity', 'info');
+    } else if (action === 'remove_liquidity') {
+      setActiveTab('Remove Liquidity');
+      const parts = (pair || '').split('-').map(s => s.toUpperCase());
+      const match = POOL_PAIRS.find(p => [p.token0, p.token1].includes(parts[0]) && [p.token0, p.token1].includes(parts[1]));
+      if (match) setSelectedPair(match);
+      clearPendingAction();
+      addNotification('AI prefilled: Remove ' + pair + ' liquidity', 'info');
+    } else if (action === 'pool_info') {
+      setActiveTab('My Positions');
+      const parts = (pair || '').split('-').map(s => s.toUpperCase());
+      const match = POOL_PAIRS.find(p => [p.token0, p.token1].includes(parts[0]) && [p.token0, p.token1].includes(parts[1]));
+      if (match) setSelectedPair(match);
+      clearPendingAction();
+      addNotification('AI prefilled: Viewing ' + pair + ' pool stats', 'info');
+    }
+  }, [pendingAction]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     fetchAllPoolData();
