@@ -97,15 +97,19 @@ export async function handler(req, res) {
     return;
   }
 
-  let body = '';
-  for await (const chunk of req) body += chunk;
-
-  let payload;
-  try { payload = JSON.parse(body); }
-  catch {
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-    return;
+  // express.json() in server.js already parsed the body into req.body.
+  // If for some reason it's still a raw stream (standalone deploy), fall back to manual read.
+  let payload = req.body;
+  if (!payload || typeof payload !== 'object') {
+    try {
+      let raw = '';
+      for await (const chunk of req) raw += chunk;
+      payload = JSON.parse(raw);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
   }
 
   const { messages } = payload;
