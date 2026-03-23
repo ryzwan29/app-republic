@@ -269,3 +269,210 @@ export async function getProposalDetail(proposalId) {
     }
   }
 }
+
+export async function getTotalSupply() {
+  try {
+    const data = await fetchREST('/cosmos/bank/v1beta1/supply?pagination.limit=100');
+    const coins = data.supply || data.result || [];
+    const arai  = coins.find(c => c.denom === 'arai');
+    return arai ? (parseFloat(arai.amount) / 1e18) : 0;
+  } catch { return 0; }
+}
+
+export async function getRecentBlocks(count = 10) {
+  // Ambil beberapa block terakhir untuk hitung avg block time real
+  try {
+    const latest = await fetchREST('/cosmos/base/tendermint/v1beta1/blocks/latest');
+    const latestH = parseInt(latest.block?.header?.height || 0);
+    if (!latestH) return null;
+
+    const oldH = Math.max(1, latestH - count);
+    const old  = await fetchREST(`/cosmos/base/tendermint/v1beta1/blocks/${oldH}`);
+
+    const t1 = new Date(latest.block?.header?.time).getTime();
+    const t0 = new Date(old.block?.header?.time).getTime();
+    const diff = (t1 - t0) / 1000; // seconds
+    const blocks = latestH - oldH;
+    return blocks > 0 ? (diff / blocks) : null;
+  } catch { return null; }
+}
+
+// ─── 24h Chart Data (real on-chain) ──────────────────────────────────────────
+// Strategi: fetch latest block → hitung height 24 jam lalu dari avg block time
+// → sample 24 titik merata → per titik ambil block data (height, time, tx_count)
+// → group ke 24 bucket jam → hitung blocks/jam & tx/jam
+export async function get24hChartData() {
+  try {
+    // 1. Dapat latest block + avg block time
+    const latestData = await fetchREST('/cosmos/base/tendermint/v1beta1/blocks/latest');
+    const latestH    = parseInt(latestData.block?.header?.height || 0);
+    const latestTime = new Date(latestData.block?.header?.time).getTime();
+    if (!latestH) return null;
+
+    // 2. Estimasi block time dari 20 block terakhir
+    const oldH     = Math.max(1, latestH - 20);
+    const oldData  = await fetchREST(`/cosmos/base/tendermint/v1beta1/blocks/${oldH}`);
+    const oldTime  = new Date(oldData.block?.header?.time).getTime();
+    const avgBlockMs = (latestTime - oldTime) / 20; // ms per block
+    if (avgBlockMs <= 0) return null;
+
+    // 3. Hitung height ~24 jam lalu
+    const msIn24h     = 24 * 60 * 60 * 1000;
+    const blocks24h   = Math.floor(msIn24h / avgBlockMs);
+    const startH      = Math.max(1, latestH - blocks24h);
+    const startTime24 = latestTime - msIn24h;
+
+    // 4. Sample 25 titik merata antara startH dan latestH
+    const SAMPLES = 25;
+    const step    = Math.max(1, Math.floor((latestH - startH) / SAMPLES));
+    const heights = Array.from({ length: SAMPLES }, (_, i) => startH + i * step);
+    heights.push(latestH);
+
+    // 5. Fetch semua block sample secara parallel (batched)
+    const BATCH = 6;
+    const blockResults = [];
+    for (let i = 0; i < heights.length; i += BATCH) {
+      const batch = heights.slice(i, i + BATCH);
+      const fetched = await Promise.all(
+        batch.map(h =>
+          fetchREST(`/cosmos/base/tendermint/v1beta1/blocks/${h}`)
+            .catch(() => null)
+        )
+      );
+      blockResults.push(...fetched);
+    }
+
+    // 6. Parse sample points
+    const points = blockResults
+      .filter(Boolean)
+      .map(d => ({
+        height: parseInt(d.block?.header?.height || 0),
+        time:   new Date(d.block?.header?.time).getTime(),
+        txCount: (d.block?.data?.txs || []).length,
+      }))
+      .filter(p => p.height > 0 && p.time >= startTime24)
+      .sort((a, b) => a.height - b.height);
+
+    if (points.length < 2) return null;
+
+    // 7. Group ke 24 bucket jam
+    const hourMs  = 60 * 60 * 1000;
+    const buckets = Array.from({ length: 24 }, (_, i) => ({
+      h:        i,
+      label:    `${String(i + 1).padStart(2, '0')}:00`,
+      blocks:   0,
+      txOk:     0,
+      txFail:   0, // tx fail ga bisa dibedain dari block data tanpa receipt
+      avgTime:  0,
+      _times:   [],
+    }));
+
+    for (let i = 1; i < points.length; i++) {
+      const p    = points[i];
+      const prev = points[i - 1];
+      const relMs = p.time - startTime24;
+      const bucket = Math.min(23, Math.floor(relMs / hourMs));
+      if (bucket < 0) continue;
+
+      const blockDiff   = p.height - prev.height;
+      const timeDiffSec = (p.time - prev.time) / 1000;
+      const blockTimeSec = blockDiff > 0 ? timeDiffSec / blockDiff : 0;
+
+      buckets[bucket].blocks += blockDiff;
+      buckets[bucket].txOk  += p.txCount;
+      if (blockTimeSec > 0) buckets[bucket]._times.push(blockTimeSec);
+    }
+
+    // 8. Finalize avgTime per bucket
+    buckets.forEach(b => {
+      b.avgTime = b._times.length > 0
+        ? parseFloat((b._times.reduce((a, c) => a + c, 0) / b._times.length).toFixed(1))
+        : 0;
+      delete b._times;
+      // Pastikan blocks minimal 1 kalau ada data
+      if (b.blocks === 0 && b.txOk === 0) b.blocks = 0;
+    });
+
+    const totalTx24h = buckets.reduce((s, b) => s + b.txOk, 0);
+    return { buckets, totalTx24h, avgBlockTimeSec: avgBlockMs / 1000 };
+  } catch (e) {
+    console.warn('[get24hChartData]', e.message);
+    return null;
+  }
+}
+
+// ─── Daily TX Chart (7 hari terakhir, 1 bar = 1 hari) ────────────────────────
+export async function getDailyTxData(days = 14) {
+  try {
+    // 1. Dapat latest block
+    const latestData = await fetchREST('/cosmos/base/tendermint/v1beta1/blocks/latest');
+    const latestH    = parseInt(latestData.block?.header?.height || 0);
+    const latestTime = new Date(latestData.block?.header?.time).getTime();
+    if (!latestH) return null;
+
+    // 2. Avg block time dari 20 block
+    const refH    = Math.max(1, latestH - 20);
+    const refData = await fetchREST(`/cosmos/base/tendermint/v1beta1/blocks/${refH}`);
+    const refTime = new Date(refData.block?.header?.time).getTime();
+    const avgBlockMs = (latestTime - refTime) / (latestH - refH);
+    if (avgBlockMs <= 0) return null;
+
+    const blocksPerDay = Math.floor(86400000 / avgBlockMs);
+
+    // 3. Untuk setiap hari, sample ~8 titik merata sepanjang hari itu
+    //    lalu hitung total tx dari sample tersebut (ekstrapolasi)
+    const SAMPLES_PER_DAY = 8;
+    const dayMs = 86400000;
+
+    const buckets = [];
+    for (let d = days - 1; d >= 0; d--) {
+      const dayStart = latestTime - (d + 1) * dayMs;
+      const dayEnd   = latestTime - d * dayMs;
+
+      // Estimasi height range untuk hari ini
+      const hStart = Math.max(1, latestH - Math.floor((latestTime - dayStart) / avgBlockMs));
+      const hEnd   = Math.max(1, latestH - Math.floor((latestTime - dayEnd)   / avgBlockMs));
+      const hRange = Math.max(1, hEnd - hStart);
+
+      // Sample titik2 di dalam range hari itu
+      const sampleHeights = Array.from({ length: SAMPLES_PER_DAY }, (_, i) =>
+        Math.min(latestH, Math.round(hStart + (i / (SAMPLES_PER_DAY - 1)) * hRange))
+      );
+
+      // Fetch sample blocks
+      const samples = await Promise.all(
+        sampleHeights.map(h =>
+          fetchREST(`/cosmos/base/tendermint/v1beta1/blocks/${h}`)
+            .then(b => ({ txCount: (b.block?.data?.txs || []).length, height: parseInt(b.block?.header?.height || h) }))
+            .catch(() => ({ txCount: 0, height: h }))
+        )
+      );
+
+      // Rata-rata tx per block dari sample → extrapolasi ke seluruh hari
+      const avgTxPerBlock = samples.reduce((s, p) => s + p.txCount, 0) / samples.length;
+      const estimatedTx   = Math.round(avgTxPerBlock * hRange);
+
+      // Label tanggal
+      const date = new Date(dayStart);
+      const label = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const iso   = date.toISOString().slice(0, 10);
+
+      buckets.push({
+        label,
+        iso,
+        dayIndex: days - 1 - d,
+        txOk:    estimatedTx,
+        txFail:  0,
+        hStart,
+        hEnd,
+        blocksInDay: hRange,
+      });
+    }
+
+    const totalTx = buckets.reduce((s, b) => s + b.txOk, 0);
+    return { buckets, totalTx };
+  } catch (e) {
+    console.warn('[getDailyTxData]', e.message);
+    return null;
+  }
+}

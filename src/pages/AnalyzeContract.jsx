@@ -169,54 +169,119 @@ function TxFieldRow({ label, value, mono = false, accent }) {
   );
 }
 
-function MsgCard({ msg, index }) {
-  const type = msg['@type'] || msg.type || 'Unknown';
-  const shortType = type.split('.').pop();
-  const { ['@type']: _t, type: _ty, ...rest } = msg;
+function truncateAddr(s) {
+  if (!s || s.length <= 20) return s;
+  return s.slice(0, 14) + '\u2026' + s.slice(-6);
+}
 
-  function renderVal(v, depth = 0) {
-    if (v === null || v === undefined) return <span className="text-slate-600">—</span>;
-    if (typeof v === 'boolean') return <span className={v ? 'text-green-400' : 'text-red-400'}>{String(v)}</span>;
-    if (typeof v !== 'object') return <span className="text-slate-200 font-mono text-xs break-all">{String(v)}</span>;
-    if (Array.isArray(v)) {
-      if (v.length === 0) return <span className="text-slate-600">[]</span>;
-      return (
-        <div className="ml-3 border-l border-blue-900/30 pl-2 space-y-0.5">
-          {v.map((item, i) => <div key={i}>{renderVal(item, depth + 1)}</div>)}
-        </div>
-      );
-    }
-    if (depth >= 3) return <span className="text-slate-500 font-mono text-xs">{'{...}'}</span>;
+function CopyInline({ value }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button onClick={() => { navigator.clipboard.writeText(value); setDone(true); setTimeout(() => setDone(false), 1500); }}
+      className="ml-1 text-slate-600 hover:text-blue-400 transition-colors shrink-0" title="Copy">
+      {done ? <IconCheck /> : <IconCopy />}
+    </button>
+  );
+}
+
+function AddrSpan({ value }) {
+  return (
+    <span className="flex items-center gap-0.5 font-mono text-xs text-blue-300 break-all">
+      {value}
+      <CopyInline value={value} />
+    </span>
+  );
+}
+
+function CoinSpan({ value }) {
+  const match = typeof value === 'string' && value.match(/^(\d+)(arai)$/i);
+  if (match) {
+    const amt = (parseInt(match[1]) / 1e18).toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
     return (
-      <div className="ml-3 border-l border-blue-900/30 pl-2 space-y-0.5">
-        {Object.entries(v).map(([k, val]) => (
-          <div key={k} className="flex flex-wrap gap-1.5 text-xs">
-            <span className="text-slate-500 font-mono">{k}:</span>
-            {renderVal(val, depth + 1)}
+      <span className="font-mono text-xs">
+        <span className="text-green-400 font-semibold">{amt} RAI</span>
+        <span className="text-slate-600 ml-1.5">({value})</span>
+      </span>
+    );
+  }
+  return <span className="font-mono text-xs text-slate-300">{value}</span>;
+}
+
+function isAddrKey(k) { return /address|delegator|validator|sender|receiver|recipient|from|to|authority|voter|proposer/i.test(k); }
+function isAddrVal(v) { return typeof v === 'string' && (v.startsWith('rai') || v.startsWith('0x')); }
+function isCoinVal(v) { return typeof v === 'string' && /^\d+(arai|uatom|stake)/i.test(v); }
+
+function FieldVal({ fieldKey, value }) {
+  if (value === null || value === undefined) return <span className="text-slate-600 font-mono text-xs">—</span>;
+  if (typeof value === 'boolean') return <span className={`font-mono text-xs font-semibold ${value ? 'text-green-400' : 'text-red-400'}`}>{String(value)}</span>;
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return (
+      <div className="bg-black/20 rounded-lg px-3 py-2 space-y-1 w-full">
+        {Object.entries(value).map(([k, v]) => (
+          <div key={k} className="flex items-start gap-2 text-xs">
+            <span className="text-slate-600 font-mono w-20 shrink-0">{k}</span>
+            <FieldVal fieldKey={k} value={v} />
           </div>
         ))}
       </div>
     );
   }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span className="font-mono text-xs text-slate-600">[ ]</span>;
+    return (
+      <div className="space-y-1 w-full">
+        {value.map((item, i) => (
+          <div key={i} className="bg-black/20 rounded px-2 py-1">
+            <FieldVal fieldKey={fieldKey} value={item} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  const str = String(value);
+  if (isCoinVal(str)) return <CoinSpan value={str} />;
+  if ((isAddrKey(fieldKey) && isAddrVal(str)) || isAddrVal(str)) return <AddrSpan value={str} />;
+  return <span className="font-mono text-xs text-slate-300 break-all">{str}</span>;
+}
+
+function MsgCard({ msg, index }) {
+  const type = msg['@type'] || msg.type || 'Unknown';
+  const shortType = type.split('.').pop();
+  const { ['@type']: _t, type: _ty, ...rest } = msg;
 
   return (
-    <div className="rounded-xl bg-black/20 border border-blue-900/20 overflow-hidden">
-      <div className="px-4 py-2.5 bg-blue-900/15 border-b border-blue-900/20 flex items-center gap-2">
-        <span className="text-xs text-slate-500 font-mono">msg[{index}]</span>
-        <span className="badge-blue">{shortType}</span>
+    <div className="rounded-2xl border border-blue-500/15 overflow-hidden bg-[#07101f]">
+      {/* header */}
+      <div className="flex items-center gap-3 px-5 py-3 border-b border-blue-900/20" style={{background:'rgba(37,99,235,0.08)'}}>
+        <span className="text-xs text-slate-600 font-mono shrink-0">msg[{index}]</span>
+        <span className="badge-blue shrink-0">{shortType}</span>
         <span className="text-xs text-slate-600 font-mono truncate">{type}</span>
       </div>
-      <div className="px-4 py-3 space-y-1.5">
+      {/* fields */}
+      <div className="px-5 py-2 divide-y divide-blue-900/10">
         {Object.entries(rest).map(([k, v]) => (
-          <div key={k} className="flex flex-wrap gap-1.5 text-xs">
-            <span className="text-slate-400 font-mono w-24 shrink-0">{k}</span>
-            {renderVal(v)}
+          <div key={k} className="flex items-start gap-4 py-2.5">
+            <span className="text-xs text-slate-500 font-mono w-28 shrink-0 pt-0.5">{k}</span>
+            <div className="flex-1 min-w-0">
+              <FieldVal fieldKey={k} value={v} />
+            </div>
           </div>
         ))}
       </div>
     </div>
   );
 }
+
+const EV_COLORS = {
+  coin_spent:       'text-red-400   bg-red-900/15   border-red-500/15',
+  coin_received:    'text-green-400 bg-green-900/15 border-green-500/15',
+  transfer:         'text-blue-400  bg-blue-900/15  border-blue-500/15',
+  message:          'text-purple-400 bg-purple-900/15 border-purple-500/15',
+  delegate:         'text-yellow-400 bg-yellow-900/15 border-yellow-500/15',
+  unbond:           'text-orange-400 bg-orange-900/15 border-orange-500/15',
+  withdraw_rewards: 'text-cyan-400  bg-cyan-900/15  border-cyan-500/15',
+  redelegate:       'text-indigo-400 bg-indigo-900/15 border-indigo-500/15',
+};
 
 function EventLog({ events }) {
   const [open, setOpen] = useState(false);
@@ -224,28 +289,50 @@ function EventLog({ events }) {
   return (
     <div>
       <button onClick={() => setOpen(v => !v)}
-        className="flex items-center gap-2 text-xs text-slate-500 hover:text-slate-300 transition-colors mb-2">
-        <IconChevronDown />
+        className="flex items-center gap-2 text-xs text-slate-500 hover:text-slate-300 transition-colors mb-3 group">
+        <span className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`}><IconChevronDown /></span>
         <span>{open ? 'Hide' : 'Show'} {events.length} events</span>
       </button>
       {open && (
-        <div className="space-y-1.5 max-h-60 overflow-y-auto">
-          {events.map((ev, i) => (
-            <div key={i} className="text-xs font-mono p-2 rounded-lg bg-black/20 border border-blue-900/20">
-              <div className="text-blue-400 mb-1">{ev.type}</div>
-              {ev.attributes?.map((a, j) => (
-                <div key={j} className="flex gap-2 text-slate-500">
-                  <span className="text-slate-400">{a.key}:</span>
-                  <span className="text-slate-300 break-all">{a.value}</span>
+        <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
+          {events.map((ev, i) => {
+            const cls = EV_COLORS[ev.type] || 'text-slate-400 bg-black/20 border-blue-900/15';
+            const [textCls, bgCls, borderCls] = cls.split(' ');
+            return (
+              <div key={i} className={`rounded-2xl border overflow-hidden ${borderCls}`} style={{background:'#070f1e'}}>
+                <div className={`flex items-center gap-2 px-4 py-2 border-b ${borderCls} ${bgCls}`}>
+                  <span className={`text-xs font-mono font-semibold ${textCls}`}>{ev.type}</span>
                 </div>
-              ))}
-            </div>
-          ))}
+                {ev.attributes?.length > 0 && (
+                  <div className="px-4 py-1.5 divide-y divide-blue-900/10">
+                    {ev.attributes.map((a, j) => {
+                      const isCoin = isCoinVal(a.value || '');
+                      const isAddr = (isAddrKey(a.key) || isAddrVal(a.value || '')) && typeof a.value === 'string' && a.value.startsWith('rai');
+                      return (
+                        <div key={j} className="flex items-start gap-3 py-2">
+                          <span className="text-xs text-slate-500 font-mono w-24 shrink-0">{a.key}</span>
+                          <div className="flex-1 min-w-0">
+                            {isCoin
+                              ? <CoinSpan value={a.value} />
+                              : isAddr
+                              ? <AddrSpan value={a.value} />
+                              : <span className="font-mono text-xs text-slate-300 break-all">{a.value}</span>
+                            }
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
+
 
 const TX_STEPS = [
   'Detecting transaction layer…',
