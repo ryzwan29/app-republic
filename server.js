@@ -127,6 +127,10 @@ app.use('/api/trading-assistant', express.json(), async (req, res) => {
 });
 
 // ── 3b. /api/verify-turnstile ──────────────────────────────────────────────────
+app.use('/api/explain-tx', async (req, res) => {
+  const { handler } = await import('./api/explain-tx.js');
+  await handler(req, res);
+});
 app.use('/api/verify-turnstile', async (req, res) => {
   try {
     const { handler } = await import('./api/verify-turnstile.js');

@@ -85,6 +85,7 @@ function apiRoutesPlugin() {
       registerRoute('/api/analyze',          'analyze.js');
       registerRoute('/api/trading-assistant', 'trading-assistant.js');
       registerRoute('/api/verify-turnstile', 'verify-turnstile.js');
+      registerRoute('/api/explain-tx',        'explain-tx.js');
 
       // ── Swap Volume API ──────────────────────────────────────────────────────
       server.middlewares.use('/api/swap-volume/record', async (req, res) => {

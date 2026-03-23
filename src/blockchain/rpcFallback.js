@@ -166,3 +166,118 @@ export function getProviderStatus() {
     activeAPI: i === _activeIndex.api,
   }));
 }
+// ─── Transaction fetchers ─────────────────────────────────────────────────────
+
+/** Fetch EVM transaction + receipt via JSON-RPC with fallback */
+export async function fetchEVMTx(hash) {
+  for (let offset = 0; offset < PROVIDERS.length; offset++) {
+    const i = (_activeIndex.evm + offset) % PROVIDERS.length;
+    const url = PROVIDERS[i].evm;
+    try {
+      const call = (method, params) =>
+        withTimeout(fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+        }).then(r => r.json()));
+
+      const [txRes, rcptRes, blockRes] = await Promise.all([
+        call('eth_getTransactionByHash',      [hash]),
+        call('eth_getTransactionReceipt',     [hash]),
+        call('eth_getTransactionByHash',      [hash]).then(r =>
+          r.result?.blockHash
+            ? call('eth_getBlockByHash', [r.result.blockHash, false])
+            : Promise.resolve({ result: null })
+        ),
+      ]);
+
+      const tx   = txRes.result;
+      const rcpt = rcptRes.result;
+      if (!tx) throw new Error('Transaction not found');
+
+      _activeIndex.evm = i;
+      return {
+        hash:              tx.hash,
+        from:              tx.from,
+        to:                tx.to,
+        value:             tx.value,
+        valueETH:          tx.value ? (parseInt(tx.value, 16) / 1e18).toFixed(6) : '0',
+        input:             tx.input,
+        gasPrice:          tx.gasPrice,
+        maxFeePerGas:      tx.maxFeePerGas,
+        nonce:             parseInt(tx.nonce, 16),
+        blockNumber:       tx.blockNumber ? parseInt(tx.blockNumber, 16) : null,
+        blockHash:         tx.blockHash,
+        transactionIndex:  tx.transactionIndex ? parseInt(tx.transactionIndex, 16) : null,
+        // Receipt fields
+        status:            rcpt ? (rcpt.status === '0x1' ? 'success' : 'failed') : 'pending',
+        gasUsed:           rcpt ? parseInt(rcpt.gasUsed, 16) : null,
+        gasLimit:          tx.gas ? parseInt(tx.gas, 16) : null,
+        effectiveGasPrice: rcpt?.effectiveGasPrice,
+        feeRAI:            rcpt?.effectiveGasPrice
+          ? ((parseInt(rcpt.gasUsed, 16) * parseInt(rcpt.effectiveGasPrice, 16)) / 1e18).toFixed(8)
+          : null,
+        contractCreated:   rcpt?.contractAddress || null,
+        logs:              rcpt?.logs?.slice(0, 10) ?? [],
+        blockTime:         blockRes.result?.timestamp
+          ? new Date(parseInt(blockRes.result.timestamp, 16) * 1000).toISOString()
+          : null,
+      };
+    } catch (err) {
+      console.warn(`[fetchEVMTx] ${PROVIDERS[i].name} failed: ${err.message}`);
+    }
+  }
+  throw new Error('Transaction not found on any EVM provider');
+}
+
+/** Fetch Cosmos transaction via REST with fallback */
+export async function fetchCosmosTx(hash) {
+  // hash can be uppercase or lowercase hex
+  const upperHash = hash.toUpperCase();
+  for (let offset = 0; offset < PROVIDERS.length; offset++) {
+    const i = (_activeIndex.api + offset) % PROVIDERS.length;
+    const base = PROVIDERS[i].api;
+    try {
+      const res = await withTimeout(
+        fetch(`${base}/cosmos/tx/v1beta1/txs/${upperHash}`)
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const tx   = data.tx;
+      const txr  = data.tx_response;
+      if (!txr) throw new Error('tx_response missing');
+
+      _activeIndex.api = i;
+
+      // Flatten messages
+      const messages = tx?.body?.messages ?? [];
+
+      // Fee
+      const feeAmount = tx?.auth_info?.fee?.amount ?? [];
+      const feeStr = feeAmount.map(c => {
+        const amt = parseFloat(c.amount);
+        if (c.denom === 'arai') return `${(amt / 1e18).toFixed(8)} RAI`;
+        return `${amt} ${c.denom}`;
+      }).join(', ') || null;
+
+      return {
+        hash:        txr.txhash,
+        height:      parseInt(txr.height),
+        timestamp:   txr.timestamp,
+        status:      txr.code === 0 ? 'success' : 'failed',
+        code:        txr.code,
+        rawLog:      txr.raw_log,
+        gasWanted:   parseInt(txr.gas_wanted),
+        gasUsed:     parseInt(txr.gas_used),
+        fee:         feeStr,
+        memo:        tx?.body?.memo || null,
+        messages,
+        events:      txr.events?.slice(0, 20) ?? [],
+        logs:        txr.logs ?? [],
+      };
+    } catch (err) {
+      console.warn(`[fetchCosmosTx] ${PROVIDERS[i].name} failed: ${err.message}`);
+    }
+  }
+  throw new Error('Transaction not found on any Cosmos provider');
+}
