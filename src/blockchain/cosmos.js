@@ -149,3 +149,123 @@ export async function getInflation() {
     return '0';
   }
 }
+// ─── Governance ───────────────────────────────────────────────────────────────
+
+// Normalize proposal dari v1 atau v1beta1 ke shape yang sama
+function normalizeProposal(p, version) {
+  if (version === 'v1') {
+    const content = p.messages?.[0] ?? {};
+    return {
+      id:           p.id,
+      title:        p.title || content['@type'] || `Proposal #${p.id}`,
+      summary:      p.summary || p.metadata || '',
+      type:         content['@type']?.split('.').pop() || 'Governance',
+      status:       p.status,
+      submitTime:   p.submit_time,
+      depositEnd:   p.deposit_end_time,
+      votingStart:  p.voting_start_time,
+      votingEnd:    p.voting_end_time,
+      finalTime:    p.voting_end_time,
+      messages:     p.messages || [],   // raw message objects
+      tally: {
+        yes:         p.final_tally_result?.yes_count         || p.final_tally_result?.yes         || '0',
+        no:          p.final_tally_result?.no_count          || p.final_tally_result?.no          || '0',
+        abstain:     p.final_tally_result?.abstain_count     || p.final_tally_result?.abstain     || '0',
+        no_with_veto:p.final_tally_result?.no_with_veto_count|| p.final_tally_result?.no_with_veto|| '0',
+      },
+    };
+  }
+  // v1beta1
+  const content = p.content || {};
+  return {
+    id:           p.proposal_id,
+    title:        content.title || `Proposal #${p.proposal_id}`,
+    summary:      content.description || '',
+    type:         content['@type']?.split('.').pop() || 'Governance',
+    status:       p.status,
+    submitTime:   p.submit_time,
+    depositEnd:   p.deposit_end_time,
+    votingStart:  p.voting_start_time,
+    votingEnd:    p.voting_end_time,
+    finalTime:    p.voting_end_time,
+    messages:     [content],            // wrap in array for uniform access
+    tally: {
+      yes:          p.final_tally_result?.yes          || '0',
+      no:           p.final_tally_result?.no           || '0',
+      abstain:      p.final_tally_result?.abstain      || '0',
+      no_with_veto: p.final_tally_result?.no_with_veto || '0',
+    },
+  };
+}
+
+export async function getProposals() {
+  // Try v1 first, fall back to v1beta1
+  try {
+    const data = await fetchREST('/cosmos/gov/v1/proposals?pagination.limit=50&pagination.reverse=true');
+    const proposals = data.proposals || [];
+    return proposals.map(p => normalizeProposal(p, 'v1'));
+  } catch {
+    try {
+      const data = await fetchREST('/cosmos/gov/v1beta1/proposals?pagination.limit=50&pagination.reverse=true');
+      const proposals = data.proposals || [];
+      return proposals.map(p => normalizeProposal(p, 'v1beta1'));
+    } catch {
+      return [];
+    }
+  }
+}
+
+export async function getProposalTally(proposalId) {
+  try {
+    const data = await fetchREST(`/cosmos/gov/v1/proposals/${proposalId}/tally`);
+    const t = data.tally || {};
+    return {
+      yes:          t.yes_count          || t.yes          || '0',
+      no:           t.no_count           || t.no           || '0',
+      abstain:      t.abstain_count      || t.abstain      || '0',
+      no_with_veto: t.no_with_veto_count || t.no_with_veto || '0',
+    };
+  } catch {
+    try {
+      const data = await fetchREST(`/cosmos/gov/v1beta1/proposals/${proposalId}/tally`);
+      const t = data.tally || {};
+      return { yes: t.yes||'0', no: t.no||'0', abstain: t.abstain||'0', no_with_veto: t.no_with_veto||'0' };
+    } catch {
+      return { yes:'0', no:'0', abstain:'0', no_with_veto:'0' };
+    }
+  }
+}
+
+export async function getProposalVotes(proposalId) {
+  try {
+    const data = await fetchREST(`/cosmos/gov/v1/proposals/${proposalId}/votes?pagination.limit=100`);
+    return (data.votes || []).map(v => ({
+      voter:   v.voter,
+      options: v.options || [{ option: v.option, weight: '1' }],
+    }));
+  } catch {
+    try {
+      const data = await fetchREST(`/cosmos/gov/v1beta1/proposals/${proposalId}/votes?pagination.limit=100`);
+      return (data.votes || []).map(v => ({
+        voter:   v.voter,
+        options: v.options || [{ option: v.option, weight: '1' }],
+      }));
+    } catch {
+      return [];
+    }
+  }
+}
+
+export async function getProposalDetail(proposalId) {
+  try {
+    const data = await fetchREST(`/cosmos/gov/v1/proposals/${proposalId}`);
+    return normalizeProposal(data.proposal, 'v1');
+  } catch {
+    try {
+      const data = await fetchREST(`/cosmos/gov/v1beta1/proposals/${proposalId}`);
+      return normalizeProposal(data.proposal, 'v1beta1');
+    } catch {
+      return null;
+    }
+  }
+}

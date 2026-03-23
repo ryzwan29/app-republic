@@ -9,6 +9,8 @@ const NAV_LINKS = [
   { path: '/swap', label: 'Swap' },
   { path: '/liquidity', label: 'Liquidity' },
   { path: '/stake', label: 'Stake' },
+  { path: '/governance', label: 'Governance' },
+  { path: '/network', label: 'Network' },
   { path: '/faucet', label: 'Faucet' },
   { path: '/analyze', label: 'Analyze' },
 ];

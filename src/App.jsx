@@ -11,6 +11,8 @@ import Liquidity from './pages/Liquidity.jsx';
 import Stake from './pages/Stake.jsx';
 import Faucet from './pages/Faucet.jsx';
 import AnalyzeContract from './pages/AnalyzeContract.jsx';
+import Governance from './pages/Governance.jsx';
+import NetworkStatus from './pages/NetworkStatus.jsx';
 import { AIProvider } from './contexts/AIContext.jsx';
 import {
   connectMetaMask,
@@ -196,6 +198,8 @@ function AppContent() {
               <Route path="/stake" element={<Stake />} />
               <Route path="/faucet" element={<Faucet />} />
               <Route path="/analyze" element={<AnalyzeContract />} />
+              <Route path="/governance" element={<Governance />} />
+              <Route path="/network" element={<NetworkStatus />} />
             </Routes>
           </PageWrapper>
         </main>

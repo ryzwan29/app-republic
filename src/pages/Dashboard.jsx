@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useWallet } from '../App.jsx';
 import { TokenIcon } from '../components/TokenSelector.jsx';
@@ -11,6 +11,239 @@ import { POOL_PAIRS } from '../blockchain/tokens.js';
 import { fetchWithFallback } from '../blockchain/rpcFallback.js';
 
 const DENOM_EXPONENT = 18;
+
+// ─── Portfolio Analytics ──────────────────────────────────────────────────────
+const TOKEN_PRICES = { RAI: 1, USDT: 1, USDC: 1, WRAI: 1.02, WBTC: 85000, WETH: 2000 };
+const TOKEN_COLORS = {
+  RAI:        '#3b82f6',
+  USDT:       '#22c55e',
+  USDC:       '#06b6d4',
+  WRAI:       '#6366f1',
+  WBTC:       '#f97316',
+  WETH:       '#8b5cf6',
+  'Staked RAI':'#a855f7',
+  Rewards:    '#eab308',
+};
+
+function seededRand(seed) {
+  let s = (seed ^ 0xdeadbeef) >>> 0;
+  return () => { s = Math.imul(1664525, s) + 1013904223 >>> 0; return s / 4294967296; };
+}
+function hashStr(str = '') {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = Math.imul(31, h) + str.charCodeAt(i) | 0;
+  return Math.abs(h);
+}
+function genHistory(current, seed, n = 14) {
+  const rng = seededRand(seed);
+  const arr = [];
+  let v = current * (0.80 + rng() * 0.14);
+  for (let i = 0; i < n - 1; i++) { v = Math.max(0, v * (1 + (rng() - 0.47) * 0.07)); arr.push(v); }
+  arr.push(current);
+  return arr;
+}
+function fmtUSD(n) {
+  if (n >= 1e9) return '$' + (n / 1e9).toFixed(3) + 'B';
+  if (n >= 1e6) return '$' + (n / 1e6).toFixed(3) + 'M';
+  return '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function DonutChart({ segments, totalUSD, hovered, onHover }) {
+  const CX = 50, CY = 50, RO = 42, RI = 26;
+  return (
+    <svg viewBox="0 0 100 100" className="w-full h-full">
+      {segments.map((s, i) => {
+        const sweep = s.end - s.start;
+        if (sweep <= 0) return null;
+        const gap = 0.025, s0 = s.start + gap, e0 = s.end - gap;
+        const lg = sweep > Math.PI ? 1 : 0;
+        const p = (a, r) => [CX + r * Math.cos(a), CY + r * Math.sin(a)];
+        const [x1, y1] = p(s0, RO), [x2, y2] = p(e0, RO);
+        const [x3, y3] = p(e0, RI), [x4, y4] = p(s0, RI);
+        const d = `M${x1.toFixed(2)} ${y1.toFixed(2)} A${RO} ${RO} 0 ${lg} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} L${x3.toFixed(2)} ${y3.toFixed(2)} A${RI} ${RI} 0 ${lg} 0 ${x4.toFixed(2)} ${y4.toFixed(2)} Z`;
+        return (
+          <path key={s.symbol} d={d} fill={s.color}
+            opacity={hovered === null || hovered === i ? 1 : 0.4}
+            className="cursor-pointer transition-opacity"
+            onMouseEnter={() => onHover(i)} onMouseLeave={() => onHover(null)}/>
+        );
+      })}
+      <circle cx={CX} cy={CY} r={RI} fill="rgba(8,14,30,0.95)"/>
+      {hovered !== null && segments[hovered] ? (
+        <>
+          <text x={CX} y={CY - 3} textAnchor="middle" fontSize="6.5" fill="white" fontFamily="sans-serif" fontWeight="600">
+            {segments[hovered].symbol}
+          </text>
+          <text x={CX} y={CY + 6} textAnchor="middle" fontSize="6" fill="#94a3b8" fontFamily="monospace">
+            {((segments[hovered].usdValue / totalUSD) * 100).toFixed(1)}%
+          </text>
+        </>
+      ) : (
+        <text x={CX} y={CY + 3} textAnchor="middle" fontSize="6" fill="#64748b" fontFamily="sans-serif">
+          {segments.length} assets
+        </text>
+      )}
+    </svg>
+  );
+}
+
+function SparkLine({ history, color, W = 300, H = 80 }) {
+  const maxV = Math.max(...history), minV = Math.min(...history);
+  const range = maxV - minV || 1;
+  const pts = history.map((v, i) => {
+    const x = (i / (history.length - 1)) * W;
+    const y = H - 4 - ((v - minV) / range) * (H - 10);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const area = `0,${H} ${pts} ${W},${H}`;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H }} preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="paGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.2"/>
+          <stop offset="100%" stopColor={color} stopOpacity="0"/>
+        </linearGradient>
+      </defs>
+      <polygon points={area} fill="url(#paGrad)"/>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.8"
+        strokeLinejoin="round" strokeLinecap="round"/>
+      {/* last dot */}
+      {(() => {
+        const lv = history[history.length - 1];
+        const lx = W, ly = H - 4 - ((lv - minV) / range) * (H - 10);
+        return <circle cx={lx} cy={ly} r="3" fill={color} stroke="rgba(8,14,30,0.8)" strokeWidth="1.5"/>;
+      })()}
+    </svg>
+  );
+}
+
+function PortfolioAnalytics({ balances, stakedRAI, pendingRewards, walletAddress }) {
+  const [hovered, setHovered] = useState(null);
+
+  const assets = useMemo(() => {
+    const items = Object.entries(balances).map(([sym, bal]) => ({
+      symbol: sym, balance: parseFloat(bal) || 0,
+      usdValue: (parseFloat(bal) || 0) * (TOKEN_PRICES[sym] || 1),
+      color: TOKEN_COLORS[sym] || '#94a3b8',
+    }));
+    const sv = parseFloat(stakedRAI) * TOKEN_PRICES.RAI;
+    if (sv > 0) items.push({ symbol: 'Staked RAI', balance: parseFloat(stakedRAI), usdValue: sv, color: TOKEN_COLORS['Staked RAI'] });
+    const rv = pendingRewards * TOKEN_PRICES.RAI;
+    if (rv > 0.001) items.push({ symbol: 'Rewards', balance: pendingRewards, usdValue: rv, color: TOKEN_COLORS.Rewards });
+    return items.filter(a => a.usdValue > 0.0001);
+  }, [balances, stakedRAI, pendingRewards]);
+
+  const totalUSD = useMemo(() => assets.reduce((s, a) => s + a.usdValue, 0), [assets]);
+
+  const segments = useMemo(() => {
+    let angle = -Math.PI / 2;
+    return assets.map(a => {
+      const start = angle;
+      const sweep = totalUSD > 0 ? (a.usdValue / totalUSD) * 2 * Math.PI : 0;
+      angle += sweep;
+      return { ...a, start, end: angle };
+    });
+  }, [assets, totalUSD]);
+
+  const seed    = hashStr(walletAddress || 'default');
+  const history = useMemo(() => genHistory(totalUSD, seed), [totalUSD, seed]);
+  const maxV    = Math.max(...history);
+  const minV    = Math.min(...history);
+  const pnl     = history[history.length - 1] - history[0];
+  const pnlPct  = history[0] > 0 ? (pnl / history[0]) * 100 : 0;
+  const up      = pnl >= 0;
+  const lineColor = up ? '#22c55e' : '#ef4444';
+
+  if (totalUSD < 0.0001 && assets.length === 0) return null;
+
+  return (
+    <div className="glass-card p-5 mb-6 overflow-hidden">
+
+      {/* ── Header ── */}
+      <div className="flex items-center justify-between mb-5">
+        <h2 className="font-display font-bold text-white text-lg">Portfolio Analytics</h2>
+        <span className="text-xs text-slate-500 font-display">Simulated 14-day history · Testnet</span>
+      </div>
+
+      {/* ── Main layout: donut | legend+total | chart ── */}
+      <div className="flex flex-col lg:flex-row gap-5 items-start">
+
+        {/* 1. Donut */}
+        <div className="shrink-0">
+          <div className="text-[10px] text-slate-500 font-display uppercase tracking-widest mb-2">Asset Breakdown</div>
+          <div className="w-28 h-28">
+            <DonutChart segments={segments} totalUSD={totalUSD} hovered={hovered} onHover={setHovered}/>
+          </div>
+        </div>
+
+        {/* 2. Legend table */}
+        <div className="shrink-0 min-w-[180px]">
+          <div className="text-[10px] text-slate-500 font-display uppercase tracking-widest mb-2 invisible">spacer</div>
+          <div className="space-y-1.5 mt-1">
+            {segments.map((s, i) => {
+              const pct = totalUSD > 0 ? ((s.usdValue / totalUSD) * 100).toFixed(1) : '0';
+              return (
+                <div key={s.symbol}
+                  className={`flex items-center gap-2 text-xs cursor-pointer rounded px-1.5 py-0.5 transition-colors ${hovered === i ? 'bg-white/5' : ''}`}
+                  onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}>
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: s.color }}/>
+                  <span className="text-slate-300 font-display w-16 truncate">{s.symbol}</span>
+                  <span className="font-mono text-slate-500 w-9 text-right">{pct}%</span>
+                  <span className="font-mono text-slate-400 text-right ml-1">
+                    {fmtUSD(s.usdValue)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* divider */}
+        <div className="hidden lg:block w-px self-stretch bg-blue-900/30 mx-1"/>
+
+        {/* 3. Total + chart */}
+        <div className="flex-1 min-w-0">
+          {/* Total value row */}
+          <div className="flex items-start justify-between gap-4 mb-3">
+            <div>
+              <div className="font-mono font-extrabold text-white text-2xl sm:text-3xl leading-none tracking-tight">
+                {fmtUSD(totalUSD)}
+              </div>
+              <div className="text-[10px] text-slate-500 font-display uppercase tracking-widest mt-1">14-Day Portfolio Value</div>
+            </div>
+            <div className={`flex items-center gap-1 font-mono font-bold text-sm shrink-0 ${up ? 'text-green-400' : 'text-red-400'}`}>
+              {up ? '↑' : '↓'} {Math.abs(pnlPct).toFixed(2)}%
+            </div>
+          </div>
+
+          {/* Spark chart */}
+          <div className="rounded-xl bg-black/20 overflow-hidden">
+            <SparkLine history={history} color={lineColor} H={80}/>
+          </div>
+          <div className="flex justify-between text-[10px] text-slate-600 mt-1 px-1">
+            <span>14 days ago</span>
+            <span>Today</span>
+          </div>
+
+          {/* PnL / Peak / Trough */}
+          <div className="grid grid-cols-3 gap-2 mt-3">
+            {[
+              { label: 'PnL (14d)', value: `${up ? '+' : ''}${fmtUSD(Math.abs(pnl))}`, color: up ? 'text-green-400' : 'text-red-400' },
+              { label: 'Peak',     value: fmtUSD(maxV),                                 color: 'text-white' },
+              { label: 'Trough',   value: fmtUSD(minV),                                 color: 'text-white' },
+            ].map(x => (
+              <div key={x.label} className="p-2.5 rounded-xl bg-black/20 border border-blue-900/20">
+                <div className="text-[10px] text-slate-500 font-display mb-1">{x.label}</div>
+                <div className={`font-mono text-xs font-bold ${x.color}`}>{x.value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
 
 export default function Dashboard() {
   const { evmAddress, cosmosAddress, balances, loadingBalances, walletType, connectEVM, connectCosmos, refreshBalances, addNotification } = useWallet();
@@ -324,6 +557,14 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Portfolio Analytics */}
+      <PortfolioAnalytics
+        balances={balances}
+        stakedRAI={evmAddress && cosmosAddress ? combinedStaked : displayTotalStaked}
+        pendingRewards={totalRewards}
+        walletAddress={evmAddress || cosmosAddress}
+      />
 
       {/* Validator Commission Card — only shown if wallet is a validator */}
       {walletType === 'keplr' && validatorInfo?.isValidator && (
