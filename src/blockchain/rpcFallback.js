@@ -19,9 +19,9 @@ const PROVIDERS = [
   },
   {
     name: 'RydOne',
-    evm: 'https://testnet-evm-republic.provewithryd.xyz',
-    rpc: 'https://testnet-rpc-republic.provewithryd.xyz',
-    api: 'https://testnet-api-republic.provewithryd.xyz',
+    evm: 'https://testnet-evm-republic.rydone.xyz',
+    rpc: 'https://testnet-rpc-republic.rydone.xyz',
+    api: 'https://testnet-api-republic.rydone.xyz',
   },
 ];
 

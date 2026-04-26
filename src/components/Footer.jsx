@@ -47,7 +47,7 @@ export default function Footer() {
           <div className="flex-1 flex justify-center">
             <span className="text-slate-500 text-xs font-mono flex items-center gap-1">
               Made with <span className="text-red-400 mx-0.5">❤️</span> by
-              <a href="https://provewithryd.xyz" target="_blank" rel="noopener noreferrer"
+              <a href="https://rydone.xyz" target="_blank" rel="noopener noreferrer"
                 className="text-blue-400 hover:text-blue-300 transition-colors font-semibold ml-1">
                 @RydOne
               </a>

@@ -69,7 +69,7 @@ export async function switchToRepublicNetwork() {
   const allRpcUrls = [
     'https://evm-rpc.republicai.io',
     'https://evmrpc-t.republicai.nodestake.org',
-    'https://testnet-evm-republic.provewithryd.xyz',
+    'https://testnet-evm-republic.rydone.xyz',
   ];
 
   try {

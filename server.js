@@ -21,7 +21,7 @@ const PORT = parseInt(process.env.PORT, 10) || 3001;
 const EVM_PROVIDERS_DEFAULT = [
   process.env.RPC_TARGET || 'https://evm-rpc.republicai.io',
   'https://evmrpc-t.republicai.nodestake.org',
-  'https://testnet-evm-republic.provewithryd.xyz',
+  'https://testnet-evm-republic.rydone.xyz',
 ];
 
 // Live-sorted list — diupdate tiap RECHECK_INTERVAL ms

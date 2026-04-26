@@ -177,7 +177,7 @@ export default function Home() {
                 {[
                   ['Chain ID', '77701'],
                   ['Currency', 'RAI'],
-                  ['RPC', 'testnet-evm-republic.provewithryd.xyz'],
+                  ['RPC', 'testnet-evm-republic.rydone.xyz'],
                 ].map(([k, v]) => (
                   <div key={k} className="flex justify-between items-center">
                     <span className="text-slate-500 text-sm">{k}</span>
@@ -192,7 +192,7 @@ export default function Home() {
                 {[
                   ['Chain ID', 'raitestnet_77701-1'],
                   ['Prefix', 'rai'],
-                  ['REST', 'testnet-api-republic.provewithryd.xyz'],
+                  ['REST', 'testnet-api-republic.rydone.xyz'],
                 ].map(([k, v]) => (
                   <div key={k} className="flex justify-between items-center">
                     <span className="text-slate-500 text-sm">{k}</span>

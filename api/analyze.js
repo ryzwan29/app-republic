@@ -13,7 +13,7 @@
 
 const OPENAI_API_KEY    = process.env.OPENAI_API_KEY    || '';
 const OPENAI_BASE_URL   = (process.env.OPENAI_BASE_URL  || 'https://api.openai.com/v1').replace(/\/$/, '');
-const BLOCKSCOUT_URL    = (process.env.BLOCKSCOUT_URL   || 'https://republicscan.provewithryd.xyz').replace(/\/$/, '');
+const BLOCKSCOUT_URL    = (process.env.BLOCKSCOUT_URL   || 'https://republicscan.rydone.xyz').replace(/\/$/, '');
 
 // Fetch verified source code from Blockscout (Etherscan-compatible API)
 async function getSourceCode(address) {

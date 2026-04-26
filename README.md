@@ -17,10 +17,10 @@ A decentralized exchange (DEX) built for the Republic Testnet, supporting EVM + 
 |-----------|-------|
 | Network Name | Republic Testnet |
 | Chain ID | 77701 |
-| RPC | https://testnet-evm-republic.provewithryd.xyz |
+| RPC | https://testnet-evm-republic.rydone.xyz |
 | Currency | RAI |
 | Cosmos Chain ID | raitestnet_77701-1 |
-| Cosmos REST | https://testnet-api-republic.provewithryd.xyz |
+| Cosmos REST | https://testnet-api-republic.rydone.xyz |
 
 ## Setup
 
