@@ -6,7 +6,7 @@
  */
 
 const OPENAI_API_KEY  = process.env.OPENAI_API_KEY  || '';
-const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || 'https://litellm.koboi2026.biz.id/v1').replace(/\/$/, '');
+const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
 
 const SYSTEM_PROMPT = `You are an AI assistant embedded in Republic DEX, a decentralized exchange on Republic Testnet (Chain ID: raitestnet_77701-1, EVM: 77701). Your job is to explain blockchain transactions in plain, human-friendly language.
 
